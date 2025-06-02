@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
   std::vector<mentry_t> output_matrix_c;
 
   std::vector<std::string> result;
-
+git
   result.emplace_back(input_experiment_name);
 
   {
@@ -127,67 +127,86 @@ int main(int argc, char** argv) {
 
   // your code begins //////////////////////////////////////////////////////////
 
-  // You can implement your own "read_matrix" method (e.g., overlap file reading 
-  // with matrix partitioning)
-  // Only the rank 0 is allowed to read input matrices from files and write 
-  // output to file
-  // The output matrix must be stored in the "output_matrix_c" data structure
-  // The code for writing output to file is provided below 
-
-  std::size_t message_Item; 
-
+  // Calculate work distribution
+  std::size_t total_elements = m * m;  // Total elements in result matrix
+  std::size_t elements_per_process = total_elements / process_group_size;
+  std::size_t remaining_elements = total_elements % process_group_size;
+  
+  // Calculate local matrix sizes
+  std::size_t local_elements = elements_per_process + (process_rank < remaining_elements ? 1 : 0);
+  std::size_t local_rows = (local_elements + m - 1) / m;  // Ceiling division
+  
+  // Initialize matrices
   if (process_rank == 0) {
-
-    double local_start_time;
-	  double local_end_time; 
-    double local_elapsed_time;
-
-    message_Item = m;
-    MPI_Send(&message_Item, 1, MPI_UINT64_T, (process_group_size - 1), 1, 
-      MPI_COMM_WORLD);
-	  std::cout << "MPI rank " << process_rank << 
-      " sent order of square matrix " << message_Item << std::endl;
-
-    output_matrix_c.resize(m*n);
-
-	  local_start_time = MPI_Wtime();
-    read_matrix(m, n, input_matrix_a, input_filename_a);
-	  read_matrix(m, n, input_matrix_b, input_filename_b);
-	  local_end_time = MPI_Wtime(); // local to a process, global barrier
-                                  // is not required
-	  local_elapsed_time = local_end_time - local_start_time;
-    std::cout << "MPI rank " << process_rank << " - read input time: " <<
-      local_elapsed_time << " seconds " << std::endl;
-
-    // serial matrix multiplication
-	
-	  local_start_time = MPI_Wtime(); 
-
-    for (std::size_t ra = 0; ra < m * n; ra = ra + n) { // matrix_a
-      for (std::size_t j = 0; j < n; ++j) { // matrix_b
-	    for (std::size_t ca = ra, rb = j, i = 0; i < n; ++ca, rb = rb + n,
-		  ++i) {
-		  output_matrix_c[ra + j] += input_matrix_a[ca] * input_matrix_b[rb];
-        } // for				
-	    } // for								   
-	  } // for			
-	   		
-	  local_end_time = MPI_Wtime();
-    local_elapsed_time = local_end_time - local_start_time;
-    std::cout << "MPI rank " << process_rank << 
-	  " - serial matrix multiplication time: " <<
-      local_elapsed_time << " seconds " << std::endl;
-
-  } else if (process_rank == (process_group_size - 1)) {
-
-    MPI_Recv(&message_Item, 1, MPI_UINT64_T, 0, 1, MPI_COMM_WORLD, 
-      MPI_STATUS_IGNORE);
-    std::cout << "MPI rank " << process_rank << 
-      " received order of square matrix " << message_Item << std::endl; 
-
+    output_matrix_c.resize(m * m, 0);  // Initialize output matrix
+    read_matrix(m, m, input_matrix_a, input_filename_a);
+    read_matrix(m, m, input_matrix_b, input_filename_b);
   } else {
-    std::cout << "MPI rank " << process_rank << " is idle" << std::endl; 
+    // Initialize empty matrices for non-root processes
+    input_matrix_a.resize(m * m, 0);
+    input_matrix_b.resize(m * m, 0);
   }
+  
+  // Local matrices for each process
+  std::vector<mentry_t> local_matrix_a(m * local_rows, 0);
+  std::vector<mentry_t> local_matrix_c(local_elements, 0);
+  
+  // Calculate send counts and displacements for matrix A
+  std::vector<int> sendcounts(process_group_size);
+  std::vector<int> displs(process_group_size);
+  
+  int sum = 0;
+  for (int i = 0; i < process_group_size; i++) {
+    std::size_t proc_elements = elements_per_process + (i < remaining_elements ? 1 : 0);
+    std::size_t proc_rows = (proc_elements + m - 1) / m;
+    sendcounts[i] = proc_rows * m;
+    displs[i] = sum;
+    sum += sendcounts[i];
+  }
+  
+  // Ensure all processes have the correct size information
+  MPI_Bcast(&m, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  
+  // Scatter matrix A
+  MPI_Scatterv(input_matrix_a.data(), sendcounts.data(), displs.data(), 
+               MPI_UINT64_T, local_matrix_a.data(), m * local_rows, 
+               MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  
+  // Broadcast matrix B
+  MPI_Bcast(input_matrix_b.data(), m * m, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  
+  // Calculate start and end positions for this process's portion of the result
+  std::size_t start_pos = process_rank * elements_per_process + 
+                         (process_rank < remaining_elements ? process_rank : remaining_elements);
+  std::size_t end_pos = start_pos + local_elements;
+  
+  // Perform local matrix multiplication
+  std::size_t current_pos = 0;
+  for (std::size_t i = 0; i < local_rows && current_pos < local_elements; i++) {
+    for (std::size_t j = 0; j < m && current_pos < local_elements; j++) {
+      mentry_t sum = 0;
+      for (std::size_t k = 0; k < m; k++) {
+        sum += local_matrix_a[i * m + k] * input_matrix_b[k * m + j];
+      }
+      local_matrix_c[current_pos++] = sum;
+    }
+  }
+  
+  // Calculate receive counts and displacements for gathering results
+  std::vector<int> recvcounts(process_group_size);
+  std::vector<int> recvdispls(process_group_size);
+  
+  sum = 0;
+  for (int i = 0; i < process_group_size; i++) {
+    recvcounts[i] = elements_per_process + (i < remaining_elements ? 1 : 0);
+    recvdispls[i] = sum;
+    sum += recvcounts[i];
+  }
+  
+  // Gather results back to process 0
+  MPI_Gatherv(local_matrix_c.data(), local_elements, MPI_UINT64_T,
+              output_matrix_c.data(), recvcounts.data(), recvdispls.data(),
+              MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
   // your code ends //////////////////////////////////////////////////////////// 
 
