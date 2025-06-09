@@ -187,13 +187,20 @@ int main(int argc, char** argv) {
   MPI_Wait(&scatter_request, MPI_STATUS_IGNORE);
   MPI_Wait(&bcast_request, MPI_STATUS_IGNORE);
   
-  // Perform local matrix multiplication
+  // Block size for cache-friendly multiplication
+  const std::size_t BLOCK_SIZE = 32;  // Adjust based on cache line size
+  
+  // Perform local matrix multiplication with blocking
   std::size_t current_pos = 0;
   for (std::size_t i = 0; i < local_rows && current_pos < local_elements; i++) {
     for (std::size_t j = 0; j < m && current_pos < local_elements; j++) {
       mentry_t sum = 0;
-      for (std::size_t k = 0; k < m; k++) {
-        sum += local_matrix_a[i * m + k] * input_matrix_b[k * m + j];
+      // Use blocking for better cache utilization
+      for (std::size_t kk = 0; kk < m; kk += BLOCK_SIZE) {
+        std::size_t k_end = std::min(kk + BLOCK_SIZE, m);
+        for (std::size_t k = kk; k < k_end; k++) {
+          sum += local_matrix_a[i * m + k] * input_matrix_b[k * m + j];
+        }
       }
       local_matrix_c[current_pos++] = sum;
     }
