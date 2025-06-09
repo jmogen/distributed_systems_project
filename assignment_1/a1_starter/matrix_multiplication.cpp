@@ -238,12 +238,29 @@ int main(int argc, char** argv) {
 
   // Main Cannon's algorithm loop
   for (int step = 0; step < grid_size; ++step) {
-    // Local block multiplication
+    // Local block multiplication with loop unrolling for better performance
     for (std::size_t i = 0; i < block_size; ++i) {
-      for (std::size_t k = 0; k < block_size; ++k) {
-        mentry_t a_ik = local_A[i * block_size + k];
-        for (std::size_t j = 0; j < block_size; ++j) {
-          local_C[i * block_size + j] += a_ik * local_B[k * block_size + j];
+      for (std::size_t k = 0; k < block_size; k += 4) {
+        if (k + 3 < block_size) {
+          mentry_t a_ik0 = local_A[i * block_size + k];
+          mentry_t a_ik1 = local_A[i * block_size + k + 1];
+          mentry_t a_ik2 = local_A[i * block_size + k + 2];
+          mentry_t a_ik3 = local_A[i * block_size + k + 3];
+          for (std::size_t j = 0; j < block_size; ++j) {
+            local_C[i * block_size + j] += 
+              a_ik0 * local_B[k * block_size + j] +
+              a_ik1 * local_B[(k + 1) * block_size + j] +
+              a_ik2 * local_B[(k + 2) * block_size + j] +
+              a_ik3 * local_B[(k + 3) * block_size + j];
+          }
+        } else {
+          // Handle remaining elements
+          for (std::size_t k_rem = k; k_rem < block_size; ++k_rem) {
+            mentry_t a_ik = local_A[i * block_size + k_rem];
+            for (std::size_t j = 0; j < block_size; ++j) {
+              local_C[i * block_size + j] += a_ik * local_B[k_rem * block_size + j];
+            }
+          }
         }
       }
     }
