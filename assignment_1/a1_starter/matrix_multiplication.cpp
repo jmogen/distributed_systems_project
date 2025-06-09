@@ -169,8 +169,9 @@ int main(int argc, char** argv) {
   MPI_Cart_coords(cart_comm, process_rank, 2, coords);
   int row = coords[0], col = coords[1];
 
-  // Calculate block size
-  std::size_t block_size = m / grid_size;
+  // Calculate block size with padding for better memory alignment
+  std::size_t block_size = (m + grid_size - 1) / grid_size;
+  block_size = ((block_size + 7) / 8) * 8;  // Align to 8 elements for better vectorization
   
   // Pre-allocate all buffers to avoid reallocations
   std::vector<mentry_t> local_A(block_size * block_size, 0);
@@ -197,8 +198,10 @@ int main(int argc, char** argv) {
         std::size_t row_offset = (brow * block_size + i) * m;
         std::size_t local_offset = i * block_size;
         for (std::size_t j = 0; j < block_size; ++j) {
-          sendbuf_A[offset + local_offset + j] = input_matrix_a[row_offset + (bcol * block_size + j)];
-          sendbuf_B[offset + local_offset + j] = input_matrix_b[row_offset + (bcol * block_size + j)];
+          if (brow * block_size + i < m && bcol * block_size + j < m) {
+            sendbuf_A[offset + local_offset + j] = input_matrix_a[row_offset + (bcol * block_size + j)];
+            sendbuf_B[offset + local_offset + j] = input_matrix_b[row_offset + (bcol * block_size + j)];
+          }
         }
       }
     }
@@ -214,7 +217,7 @@ int main(int argc, char** argv) {
                 local_B.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
   }
 
-  // Initial alignment with optimized memory access
+  // Initial alignment
   for (int i = 0; i < row; ++i) {
     int left, right;
     MPI_Cart_shift(cart_comm, 1, -1, &right, &left);
@@ -233,9 +236,9 @@ int main(int argc, char** argv) {
     std::copy(temp_B.begin(), temp_B.end(), local_B.begin());
   }
 
-  // Main Cannon's algorithm loop with optimized computation
+  // Main Cannon's algorithm loop
   for (int step = 0; step < grid_size; ++step) {
-    // Optimized local block multiplication
+    // Local block multiplication
     for (std::size_t i = 0; i < block_size; ++i) {
       for (std::size_t k = 0; k < block_size; ++k) {
         mentry_t a_ik = local_A[i * block_size + k];
@@ -251,7 +254,6 @@ int main(int argc, char** argv) {
       MPI_Cart_shift(cart_comm, 1, -1, &right, &left);
       MPI_Cart_shift(cart_comm, 0, -1, &down, &up);
       
-      // Prepare next iteration's data while current computation is in progress
       std::copy(local_A.begin(), local_A.end(), next_A.begin());
       std::copy(local_B.begin(), local_B.end(), next_B.begin());
       
@@ -260,19 +262,18 @@ int main(int argc, char** argv) {
       MPI_Sendrecv_replace(next_B.data(), block_size * block_size, MPI_UINT64_T,
                           up, 0, down, 0, cart_comm, MPI_STATUS_IGNORE);
       
-      // Swap buffers for next iteration
       local_A.swap(next_A);
       local_B.swap(next_B);
     }
   }
 
-  // Optimized gather operation
+  // Gather results
   if (process_rank == 0) {
     std::vector<mentry_t> gatherbuf(process_group_size * block_size * block_size, 0);
     MPI_Gather(local_C.data(), block_size * block_size, MPI_UINT64_T,
                gatherbuf.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
     
-    // Optimize output matrix construction
+    // Place gathered blocks into output_matrix_c
     for (int pr = 0; pr < process_group_size; ++pr) {
       int pr_coords[2];
       MPI_Cart_coords(cart_comm, pr, 2, pr_coords);
@@ -280,11 +281,15 @@ int main(int argc, char** argv) {
       std::size_t offset = pr * block_size * block_size;
       
       for (std::size_t i = 0; i < block_size; ++i) {
-        std::size_t row_offset = (brow * block_size + i) * m;
-        std::size_t local_offset = i * block_size;
-        for (std::size_t j = 0; j < block_size; ++j) {
-          output_matrix_c[row_offset + (bcol * block_size + j)] = 
-            gatherbuf[offset + local_offset + j];
+        if (brow * block_size + i < m) {
+          std::size_t row_offset = (brow * block_size + i) * m;
+          std::size_t local_offset = i * block_size;
+          for (std::size_t j = 0; j < block_size; ++j) {
+            if (bcol * block_size + j < m) {
+              output_matrix_c[row_offset + (bcol * block_size + j)] = 
+                gatherbuf[offset + local_offset + j];
+            }
+          }
         }
       }
     }
