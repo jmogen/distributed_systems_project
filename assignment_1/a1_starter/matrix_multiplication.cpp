@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
   MPI_Wait(&bcast_request, MPI_STATUS_IGNORE);
   
   // Block size for cache-friendly multiplication
-  const std::size_t BLOCK_SIZE = 32;  // Adjust based on cache line size
+  const std::size_t BLOCK_SIZE = 64;  // Adjust based on cache line size
   
   // Perform local matrix multiplication with blocking
   std::size_t current_pos = 0;
