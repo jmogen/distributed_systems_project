@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <cmath>
+#include <omp.h>
 
 #include <stdio.h>
 #include <mpi.h>
@@ -78,7 +79,7 @@ void write_result(const std::vector<std::string>& result,
   std::cout << std::endl;
   file.close(); 		
 } // write_result
-   
+
 int main(int argc, char** argv) {
 
   int process_rank, process_group_size;
@@ -187,13 +188,14 @@ int main(int argc, char** argv) {
     std::vector<mentry_t> sendbuf_A(process_group_size * block_size * block_size, 0);
     std::vector<mentry_t> sendbuf_B(process_group_size * block_size * block_size, 0);
     
-    // Use a single loop for better cache utilization
+    // Prepare data blocks for each process
     for (int pr = 0; pr < process_group_size; ++pr) {
       int pr_coords[2];
       MPI_Cart_coords(cart_comm, pr, 2, pr_coords);
       int brow = pr_coords[0], bcol = pr_coords[1];
       std::size_t offset = pr * block_size * block_size;
       
+      // Copy matrix blocks to send buffers
       for (std::size_t i = 0; i < block_size; ++i) {
         std::size_t row_offset = (brow * block_size + i) * m;
         std::size_t local_offset = i * block_size;
@@ -206,89 +208,155 @@ int main(int argc, char** argv) {
       }
     }
     
-    MPI_Scatter(sendbuf_A.data(), block_size * block_size, MPI_UINT64_T,
-                local_A.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
-    MPI_Scatter(sendbuf_B.data(), block_size * block_size, MPI_UINT64_T,
-                local_B.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
+    // Use non-blocking scatter for better overlap
+    MPI_Request scatter_req_A, scatter_req_B;
+    MPI_Iscatter(sendbuf_A.data(), block_size * block_size, MPI_UINT64_T,
+                 local_A.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm, &scatter_req_A);
+    MPI_Iscatter(sendbuf_B.data(), block_size * block_size, MPI_UINT64_T,
+                 local_B.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm, &scatter_req_B);
+    
+    // Wait for scatter operations to complete
+    MPI_Wait(&scatter_req_A, MPI_STATUS_IGNORE);
+    MPI_Wait(&scatter_req_B, MPI_STATUS_IGNORE);
   } else {
-    MPI_Scatter(nullptr, block_size * block_size, MPI_UINT64_T,
-                local_A.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
-    MPI_Scatter(nullptr, block_size * block_size, MPI_UINT64_T,
-                local_B.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
+    MPI_Request scatter_req_A, scatter_req_B;
+    MPI_Iscatter(nullptr, block_size * block_size, MPI_UINT64_T,
+                 local_A.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm, &scatter_req_A);
+    MPI_Iscatter(nullptr, block_size * block_size, MPI_UINT64_T,
+                 local_B.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm, &scatter_req_B);
+    
+    // Wait for scatter operations to complete
+    MPI_Wait(&scatter_req_A, MPI_STATUS_IGNORE);
+    MPI_Wait(&scatter_req_B, MPI_STATUS_IGNORE);
   }
 
-  // Initial alignment
+  // Initial alignment with non-blocking communication
   for (int i = 0; i < row; ++i) {
     int left, right;
     MPI_Cart_shift(cart_comm, 1, -1, &right, &left);
+    
+    // Start receive before send to overlap communication
+    MPI_Request recv_req, send_req;
     std::copy(local_A.begin(), local_A.end(), temp_A.begin());
-    MPI_Sendrecv_replace(temp_A.data(), block_size * block_size, MPI_UINT64_T,
-                        left, 0, right, 0, cart_comm, MPI_STATUS_IGNORE);
-    std::copy(temp_A.begin(), temp_A.end(), local_A.begin());
+    MPI_Irecv(next_A.data(), block_size * block_size, MPI_UINT64_T, right, 0, cart_comm, &recv_req);
+    MPI_Isend(temp_A.data(), block_size * block_size, MPI_UINT64_T, left, 0, cart_comm, &send_req);
+    
+    // Wait for communication to complete
+    MPI_Wait(&recv_req, MPI_STATUS_IGNORE);
+    MPI_Wait(&send_req, MPI_STATUS_IGNORE);
+    std::copy(next_A.begin(), next_A.end(), local_A.begin());
   }
 
   for (int i = 0; i < col; ++i) {
     int up, down;
     MPI_Cart_shift(cart_comm, 0, -1, &down, &up);
+    
+    // Start receive before send to overlap communication
+    MPI_Request recv_req, send_req;
     std::copy(local_B.begin(), local_B.end(), temp_B.begin());
-    MPI_Sendrecv_replace(temp_B.data(), block_size * block_size, MPI_UINT64_T,
-                        up, 0, down, 0, cart_comm, MPI_STATUS_IGNORE);
-    std::copy(temp_B.begin(), temp_B.end(), local_B.begin());
+    MPI_Irecv(next_B.data(), block_size * block_size, MPI_UINT64_T, down, 0, cart_comm, &recv_req);
+    MPI_Isend(temp_B.data(), block_size * block_size, MPI_UINT64_T, up, 0, cart_comm, &send_req);
+    
+    // Wait for communication to complete
+    MPI_Wait(&recv_req, MPI_STATUS_IGNORE);
+    MPI_Wait(&send_req, MPI_STATUS_IGNORE);
+    std::copy(next_B.begin(), next_B.end(), local_B.begin());
   }
 
-  // Main Cannon's algorithm loop
+  // Main Cannon's algorithm loop with communication pipelining
   for (int step = 0; step < grid_size; ++step) {
-    // Local block multiplication with loop unrolling for better performance
-    for (std::size_t i = 0; i < block_size; ++i) {
-      for (std::size_t k = 0; k < block_size; k += 4) {
-        if (k + 3 < block_size) {
-          mentry_t a_ik0 = local_A[i * block_size + k];
-          mentry_t a_ik1 = local_A[i * block_size + k + 1];
-          mentry_t a_ik2 = local_A[i * block_size + k + 2];
-          mentry_t a_ik3 = local_A[i * block_size + k + 3];
-          for (std::size_t j = 0; j < block_size; ++j) {
-            local_C[i * block_size + j] += 
-              a_ik0 * local_B[k * block_size + j] +
-              a_ik1 * local_B[(k + 1) * block_size + j] +
-              a_ik2 * local_B[(k + 2) * block_size + j] +
-              a_ik3 * local_B[(k + 3) * block_size + j];
-          }
-        } else {
-          // Handle remaining elements
-          for (std::size_t k_rem = k; k_rem < block_size; ++k_rem) {
-            mentry_t a_ik = local_A[i * block_size + k_rem];
-            for (std::size_t j = 0; j < block_size; ++j) {
-              local_C[i * block_size + j] += a_ik * local_B[k_rem * block_size + j];
-            }
-          }
-        }
-      }
-    }
-
-    // Shift blocks if not the last step
+    // Start communication for next iteration if not the last step
     if (step < grid_size - 1) {
       int left, right, up, down;
       MPI_Cart_shift(cart_comm, 1, -1, &right, &left);
       MPI_Cart_shift(cart_comm, 0, -1, &down, &up);
       
-      std::copy(local_A.begin(), local_A.end(), next_A.begin());
-      std::copy(local_B.begin(), local_B.end(), next_B.begin());
+      // Start receives before sends to overlap communication
+      MPI_Request recv_req_A, recv_req_B, send_req_A, send_req_B;
+      MPI_Irecv(next_A.data(), block_size * block_size, MPI_UINT64_T, right, 0, cart_comm, &recv_req_A);
+      MPI_Irecv(next_B.data(), block_size * block_size, MPI_UINT64_T, down, 0, cart_comm, &recv_req_B);
       
-      MPI_Sendrecv_replace(next_A.data(), block_size * block_size, MPI_UINT64_T,
-                          left, 0, right, 0, cart_comm, MPI_STATUS_IGNORE);
-      MPI_Sendrecv_replace(next_B.data(), block_size * block_size, MPI_UINT64_T,
-                          up, 0, down, 0, cart_comm, MPI_STATUS_IGNORE);
+      // Local block multiplication
+      for (std::size_t i = 0; i < block_size; ++i) {
+        for (std::size_t k = 0; k < block_size; k += 4) {
+          if (k + 3 < block_size) {
+            // Process 4 elements at a time for better performance
+            mentry_t a_ik0 = local_A[i * block_size + k];
+            mentry_t a_ik1 = local_A[i * block_size + k + 1];
+            mentry_t a_ik2 = local_A[i * block_size + k + 2];
+            mentry_t a_ik3 = local_A[i * block_size + k + 3];
+            
+            for (std::size_t j = 0; j < block_size; ++j) {
+              local_C[i * block_size + j] += 
+                a_ik0 * local_B[k * block_size + j] +
+                a_ik1 * local_B[(k + 1) * block_size + j] +
+                a_ik2 * local_B[(k + 2) * block_size + j] +
+                a_ik3 * local_B[(k + 3) * block_size + j];
+            }
+          } else {
+            // Handle remaining elements
+            for (std::size_t k_rem = k; k_rem < block_size; ++k_rem) {
+              mentry_t a_ik = local_A[i * block_size + k_rem];
+              for (std::size_t j = 0; j < block_size; ++j) {
+                local_C[i * block_size + j] += a_ik * local_B[k_rem * block_size + j];
+              }
+            }
+          }
+        }
+      }
       
+      // Complete sends after computation
+      MPI_Isend(local_A.data(), block_size * block_size, MPI_UINT64_T, left, 0, cart_comm, &send_req_A);
+      MPI_Isend(local_B.data(), block_size * block_size, MPI_UINT64_T, up, 0, cart_comm, &send_req_B);
+      
+      // Wait for all communication to complete
+      MPI_Wait(&recv_req_A, MPI_STATUS_IGNORE);
+      MPI_Wait(&recv_req_B, MPI_STATUS_IGNORE);
+      MPI_Wait(&send_req_A, MPI_STATUS_IGNORE);
+      MPI_Wait(&send_req_B, MPI_STATUS_IGNORE);
+      
+      // Swap buffers for next iteration
       local_A.swap(next_A);
       local_B.swap(next_B);
+    } else {
+      // Last step - just compute
+      for (std::size_t i = 0; i < block_size; ++i) {
+        for (std::size_t k = 0; k < block_size; k += 4) {
+          if (k + 3 < block_size) {
+            mentry_t a_ik0 = local_A[i * block_size + k];
+            mentry_t a_ik1 = local_A[i * block_size + k + 1];
+            mentry_t a_ik2 = local_A[i * block_size + k + 2];
+            mentry_t a_ik3 = local_A[i * block_size + k + 3];
+            
+            for (std::size_t j = 0; j < block_size; ++j) {
+              local_C[i * block_size + j] += 
+                a_ik0 * local_B[k * block_size + j] +
+                a_ik1 * local_B[(k + 1) * block_size + j] +
+                a_ik2 * local_B[(k + 2) * block_size + j] +
+                a_ik3 * local_B[(k + 3) * block_size + j];
+            }
+          } else {
+            for (std::size_t k_rem = k; k_rem < block_size; ++k_rem) {
+              mentry_t a_ik = local_A[i * block_size + k_rem];
+              for (std::size_t j = 0; j < block_size; ++j) {
+                local_C[i * block_size + j] += a_ik * local_B[k_rem * block_size + j];
+              }
+            }
+          }
+        }
+      }
     }
   }
 
-  // Gather results
+  // Gather results with non-blocking communication
+  MPI_Request gather_req;
   if (process_rank == 0) {
     std::vector<mentry_t> gatherbuf(process_group_size * block_size * block_size, 0);
-    MPI_Gather(local_C.data(), block_size * block_size, MPI_UINT64_T,
-               gatherbuf.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm);
+    MPI_Igather(local_C.data(), block_size * block_size, MPI_UINT64_T,
+                gatherbuf.data(), block_size * block_size, MPI_UINT64_T, 0, cart_comm, &gather_req);
+    
+    // Wait for gather to complete before processing results
+    MPI_Wait(&gather_req, MPI_STATUS_IGNORE);
     
     // Place gathered blocks into output_matrix_c
     for (int pr = 0; pr < process_group_size; ++pr) {
@@ -311,8 +379,9 @@ int main(int argc, char** argv) {
       }
     }
   } else {
-    MPI_Gather(local_C.data(), block_size * block_size, MPI_UINT64_T,
-               nullptr, block_size * block_size, MPI_UINT64_T, 0, cart_comm);
+    MPI_Igather(local_C.data(), block_size * block_size, MPI_UINT64_T,
+                nullptr, block_size * block_size, MPI_UINT64_T, 0, cart_comm, &gather_req);
+    MPI_Wait(&gather_req, MPI_STATUS_IGNORE);
   }
 
   // your code ends //////////////////////////////////////////////////////////// 
