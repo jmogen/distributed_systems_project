@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
   std::vector<mentry_t> output_matrix_c;
 
   std::vector<std::string> result;
-git
+
   result.emplace_back(input_experiment_name);
 
   {
@@ -167,18 +167,25 @@ git
   // Ensure all processes have the correct size information
   MPI_Bcast(&m, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
   
-  // Scatter matrix A
-  MPI_Scatterv(input_matrix_a.data(), sendcounts.data(), displs.data(), 
-               MPI_UINT64_T, local_matrix_a.data(), m * local_rows, 
-               MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Create requests for non-blocking operations
+  MPI_Request scatter_request, bcast_request;
   
-  // Broadcast matrix B
-  MPI_Bcast(input_matrix_b.data(), m * m, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Start non-blocking scatter of matrix A
+  MPI_Iscatterv(input_matrix_a.data(), sendcounts.data(), displs.data(), 
+                MPI_UINT64_T, local_matrix_a.data(), m * local_rows, 
+                MPI_UINT64_T, 0, MPI_COMM_WORLD, &scatter_request);
+  
+  // Start non-blocking broadcast of matrix B
+  MPI_Ibcast(input_matrix_b.data(), m * m, MPI_UINT64_T, 0, MPI_COMM_WORLD, &bcast_request);
   
   // Calculate start and end positions for this process's portion of the result
   std::size_t start_pos = process_rank * elements_per_process + 
                          (process_rank < remaining_elements ? process_rank : remaining_elements);
   std::size_t end_pos = start_pos + local_elements;
+  
+  // Wait for both communications to complete
+  MPI_Wait(&scatter_request, MPI_STATUS_IGNORE);
+  MPI_Wait(&bcast_request, MPI_STATUS_IGNORE);
   
   // Perform local matrix multiplication
   std::size_t current_pos = 0;
@@ -203,10 +210,14 @@ git
     sum += recvcounts[i];
   }
   
-  // Gather results back to process 0
-  MPI_Gatherv(local_matrix_c.data(), local_elements, MPI_UINT64_T,
-              output_matrix_c.data(), recvcounts.data(), recvdispls.data(),
-              MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Start non-blocking gather of results
+  MPI_Request gather_request;
+  MPI_Igatherv(local_matrix_c.data(), local_elements, MPI_UINT64_T,
+               output_matrix_c.data(), recvcounts.data(), recvdispls.data(),
+               MPI_UINT64_T, 0, MPI_COMM_WORLD, &gather_request);
+  
+  // Wait for gather to complete
+  MPI_Wait(&gather_request, MPI_STATUS_IGNORE);
 
   // your code ends //////////////////////////////////////////////////////////// 
 
