@@ -106,6 +106,7 @@ int main(int argc, char** argv) {
   std::vector<mentry_t> output_matrix_c;
 
   std::vector<std::string> result;
+
   result.emplace_back(input_experiment_name);
 
   {
@@ -166,26 +167,40 @@ int main(int argc, char** argv) {
   // Ensure all processes have the correct size information
   MPI_Bcast(&m, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
   
-  // Scatter matrix A
-  MPI_Scatterv(input_matrix_a.data(), sendcounts.data(), displs.data(), 
-               MPI_UINT64_T, local_matrix_a.data(), m * local_rows, 
-               MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Create requests for non-blocking operations
+  MPI_Request scatter_request, bcast_request;
   
-  // Broadcast matrix B
-  MPI_Bcast(input_matrix_b.data(), m * m, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Start non-blocking scatter of matrix A
+  MPI_Iscatterv(input_matrix_a.data(), sendcounts.data(), displs.data(), 
+                MPI_UINT64_T, local_matrix_a.data(), m * local_rows, 
+                MPI_UINT64_T, 0, MPI_COMM_WORLD, &scatter_request);
+  
+  // Start non-blocking broadcast of matrix B
+  MPI_Ibcast(input_matrix_b.data(), m * m, MPI_UINT64_T, 0, MPI_COMM_WORLD, &bcast_request);
   
   // Calculate start and end positions for this process's portion of the result
   std::size_t start_pos = process_rank * elements_per_process + 
                          (process_rank < remaining_elements ? process_rank : remaining_elements);
   std::size_t end_pos = start_pos + local_elements;
   
-  // Perform local matrix multiplication
+  // Wait for both communications to complete
+  MPI_Wait(&scatter_request, MPI_STATUS_IGNORE);
+  MPI_Wait(&bcast_request, MPI_STATUS_IGNORE);
+  
+  // Block size for cache-friendly multiplication
+  const std::size_t BLOCK_SIZE = 64;  // Adjust based on cache line size
+  
+  // Perform local matrix multiplication with blocking
   std::size_t current_pos = 0;
   for (std::size_t i = 0; i < local_rows && current_pos < local_elements; i++) {
     for (std::size_t j = 0; j < m && current_pos < local_elements; j++) {
       mentry_t sum = 0;
-      for (std::size_t k = 0; k < m; k++) {
-        sum += local_matrix_a[i * m + k] * input_matrix_b[k * m + j];
+      // Use blocking for better cache utilization
+      for (std::size_t kk = 0; kk < m; kk += BLOCK_SIZE) {
+        std::size_t k_end = std::min(kk + BLOCK_SIZE, m);
+        for (std::size_t k = kk; k < k_end; k++) {
+          sum += local_matrix_a[i * m + k] * input_matrix_b[k * m + j];
+        }
       }
       local_matrix_c[current_pos++] = sum;
     }
@@ -202,10 +217,14 @@ int main(int argc, char** argv) {
     sum += recvcounts[i];
   }
   
-  // Gather results back to process 0
-  MPI_Gatherv(local_matrix_c.data(), local_elements, MPI_UINT64_T,
-              output_matrix_c.data(), recvcounts.data(), recvdispls.data(),
-              MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  // Start non-blocking gather of results
+  MPI_Request gather_request;
+  MPI_Igatherv(local_matrix_c.data(), local_elements, MPI_UINT64_T,
+               output_matrix_c.data(), recvcounts.data(), recvdispls.data(),
+               MPI_UINT64_T, 0, MPI_COMM_WORLD, &gather_request);
+  
+  // Wait for gather to complete
+  MPI_Wait(&gather_request, MPI_STATUS_IGNORE);
 
   // your code ends //////////////////////////////////////////////////////////// 
 
