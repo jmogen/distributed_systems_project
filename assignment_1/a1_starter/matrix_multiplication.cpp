@@ -106,7 +106,6 @@ int main(int argc, char** argv) {
   std::vector<mentry_t> output_matrix_c;
 
   std::vector<std::string> result;
-git
   result.emplace_back(input_experiment_name);
 
   {
