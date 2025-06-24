@@ -12,11 +12,12 @@ object Task1 {
     val output = textFile.map(line => {
       val parts = line.split(",") // Split by comma
       val movie = parts(0) // First part is the movie name
-      val ratings = parts.drop(1).map(_.trim.toInt) // The rest are ratings, convert to Int
+      // Convert ratings to integers, filtering out empty strings
+      val ratings = parts.drop(1).map(_.trim).filter(_.nonEmpty).map(_.toInt)
       val maxRating = ratings.max // Find the highest rating
       // Find all user indices (1-based) where the rating equals the max
-      val userIndices = ratings.zipWithIndex.collect {
-        case (rating, idx) if rating == maxRating => idx + 1 // +1 for 1-based index
+      val userIndices = parts.drop(1).map(_.trim).zipWithIndex.collect {
+        case (ratingStr, idx) if ratingStr.nonEmpty && ratingStr.toInt == maxRating => idx + 1 // +1 for 1-based index
       }
       // Combine movie name and user indices as required output
       movie + "," + userIndices.mkString(",")
