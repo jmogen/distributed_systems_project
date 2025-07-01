@@ -8,9 +8,17 @@ object Task2 {
 
     val textFile = sc.textFile(args(0))
 
-    // modify this code
-    val output = textFile.map(x => x);
-    
-    output.saveAsTextFile(args(1))
+    // For each line, count the number of non-blank ratings (ignore the movie name)
+    val ratingCounts = textFile.map(line => {
+      val parts = line.split(",")
+      // Drop the movie name, count non-empty ratings
+      parts.drop(1).count(_.trim.nonEmpty)
+    })
+
+    // Sum up all counts to get the total number of ratings
+    val totalRatings = ratingCounts.reduce(_ + _)
+
+    // Save the result as a single line in a single file
+    sc.parallelize(Seq(totalRatings)).saveAsTextFile(args(1))
   }
 }
