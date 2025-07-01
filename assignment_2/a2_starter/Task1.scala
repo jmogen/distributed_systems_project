@@ -3,9 +3,7 @@ import org.apache.spark.{SparkContext, SparkConf}
 // please don't change the object name
 object Task1 {
   def main(args: Array[String]) {
-    val conf = new SparkConf()
-      .setAppName("Task 1")
-      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    val conf = new SparkConf().setAppName("Task 1")
     val sc = new SparkContext(conf)
 
     val numPartitions = if (args.length > 2) args(2).toInt else sc.defaultParallelism
