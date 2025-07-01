@@ -8,20 +8,26 @@ object Task1 {
 
     val textFile = sc.textFile(args(0))
 
-    // For each line, process to find the user(s) with the highest rating
-    val output = textFile.map(line => {
-      val parts = line.split(",") // Split by comma
-      val movie = parts(0) // First part is the movie name
-      // Convert ratings to integers, filtering out empty strings
-      val ratings = parts.drop(1).map(_.trim).filter(_.nonEmpty).map(_.toInt)
-      val maxRating = ratings.max // Find the highest rating
-      // Find all user indices (1-based) where the rating equals the max
-      val userIndices = parts.drop(1).map(_.trim).zipWithIndex.collect {
-        case (ratingStr, idx) if ratingStr.nonEmpty && ratingStr.toInt == maxRating => idx + 1 // +1 for 1-based index
+    // Efficient map: no extra collections, no shuffles, no wide dependencies
+    val output = textFile.map { line =>
+      val parts = line.split(",", -1) // -1 keeps trailing empty columns
+      val movie = parts(0)
+      // Only parse ratings that are non-empty, keep their indices
+      var maxRating = Int.MinValue
+      val ratings = new Array[Int](parts.length - 1)
+      for (i <- 1 until parts.length) {
+        if (parts(i).nonEmpty) {
+          val rating = parts(i).trim.toInt
+          ratings(i - 1) = rating
+          if (rating > maxRating) maxRating = rating
+        } else {
+          ratings(i - 1) = Int.MinValue // Mark as missing
+        }
       }
-      // Combine movie name and user indices as required output
+      // Find all user indices with the max rating
+      val userIndices = for (i <- ratings.indices if ratings(i) == maxRating) yield (i + 1)
       movie + "," + userIndices.mkString(",")
-    })
+    }
     
     output.saveAsTextFile(args(1))
   }
