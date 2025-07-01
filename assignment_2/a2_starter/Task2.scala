@@ -3,17 +3,25 @@ import org.apache.spark.{SparkContext, SparkConf}
 // please don't change the object name
 object Task2 {
   def main(args: Array[String]) {
-    val conf = new SparkConf().setAppName("Task 2")
+    val conf = new SparkConf()
+      .setAppName("Task 2")
+      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
     val sc = new SparkContext(conf)
 
-    val textFile = sc.textFile(args(0))
+    val numPartitions = if (args.length > 2) args(2).toInt else sc.defaultParallelism
+    val textFile = sc.textFile(args(0), numPartitions)
 
-    // For each line, count the number of non-blank ratings (ignore the movie name)
-    val ratingCounts = textFile.map(line => {
-      val parts = line.split(",")
-      // Drop the movie name, count non-empty ratings
-      parts.drop(1).count(_.trim.nonEmpty)
-    })
+    // Efficient per-line counting
+    val ratingCounts = textFile.map { line =>
+      val parts = line.split(",", -1)
+      var count = 0
+      var i = 1
+      while (i < parts.length) {
+        if (parts(i).trim.nonEmpty) count += 1
+        i += 1
+      }
+      count
+    }
 
     // Sum up all counts to get the total number of ratings
     val totalRatings = ratingCounts.reduce(_ + _)
