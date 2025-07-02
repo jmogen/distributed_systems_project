@@ -6,9 +6,8 @@ object Task4 {
     val conf = new SparkConf().setAppName("Task 4")
     val sc = new SparkContext(conf)
 
-    val numPartitions = 128 // For 16 machines x 4 cores = 64 cores, 128 partitions is a good default
-    val textFile = sc.textFile(args(0), numPartitions)
-
+    val textFile = sc.textFile(args(0))
+    // TEST
     // Parse each line into (movie, Array[rating])
     val movieRatings = textFile.map { line =>
       val parts = line.split(",", -1)
