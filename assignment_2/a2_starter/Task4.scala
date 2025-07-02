@@ -58,7 +58,7 @@ object Task4 {
       .map(pair => (pair, 0))
       .leftOuterJoin(similarityMap)
       .map { case ((a, b), (zero, optCount)) =>
-        s\"$a,$b,${optCount.getOrElse(0)}\"
+        s"$a,$b,${optCount.getOrElse(0)}"
       }
 
     result.saveAsTextFile(args(1))
