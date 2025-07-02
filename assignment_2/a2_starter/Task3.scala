@@ -6,28 +6,29 @@ object Task3 {
     val conf = new SparkConf().setAppName("Task 3")
     val sc = new SparkContext(conf)
 
-    val textFile = sc.textFile(args(0))
-
-    // Read all lines and split into arrays
-    val lines = textFile.map(line => line.split(",").map(_.trim)).collect()
+    val numPartitions = if (args.length > 2) args(2).toInt else sc.defaultParallelism
+    val textFile = sc.textFile(args(0), numPartitions)
 
     // Find the maximum number of user columns (excluding the movie name)
-    val numUsers = lines.map(parts => parts.length - 1).max
+    val numUsers = textFile.map { line =>
+      line.split(",", -1).length - 1
+    }.reduce(math.max)
 
-    // Initialize an array to hold counts for each user
-    val userCounts = Array.fill(numUsers)(0)
-
-    // Count non-blank ratings for each user
-    for (parts <- lines) {
-      for (i <- 1 to numUsers) {
-        if (i < parts.length && parts(i).nonEmpty) {
-          userCounts(i - 1) += 1
-        }
-      }
+    // For each line, emit (userIndex, 1) for each non-blank rating
+    val userCounts = textFile.flatMap { line =>
+      val parts = line.split(",", -1)
+      for {
+        i <- 1 until parts.length
+        if parts(i).trim.nonEmpty
+      } yield (i, 1)
     }
+    .reduceByKey(_ + _)
+    .collectAsMap() // bring only the small result to the driver
 
-    // Prepare output: (user column number, count) for each user
-    val output = sc.parallelize((1 to numUsers).map(i => s"$i,${userCounts(i - 1)}"))
+    // Prepare output for all users, filling in zeros where needed
+    val output = sc.parallelize(
+      (1 to numUsers).map(i => s"$i,${userCounts.getOrElse(i, 0)}")
+    )
     output.saveAsTextFile(args(1))
   }
 }
