@@ -28,9 +28,9 @@ object Task4 {
     // Group all ratings for each user together
     val userGrouped = userMovieRatings.groupByKey()
 
-    // For each user, generate all pairs of movies they rated the same
+    // For each user, generate all pairs of movies they rated, and count if ratings are equal
     val moviePairs = userGrouped.flatMap { case (_, movieRatingIterable) =>
-      val arr = movieRatingIterable.toSet.toArray // deduplicate (movie, rating) per user
+      val arr = movieRatingIterable.toArray.distinct // (movie, rating) pairs, deduped
       for {
         i <- arr.indices
         j <- (i + 1) until arr.length
