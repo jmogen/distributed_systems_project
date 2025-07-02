@@ -7,7 +7,7 @@ object Task4 {
     val sc = new SparkContext(conf)
 
     val textFile = sc.textFile(args(0))
-
+    // TEST
     // Parse each line into (movie, Array[rating])
     val movieRatings = textFile.map { line =>
       val parts = line.split(",", -1)
