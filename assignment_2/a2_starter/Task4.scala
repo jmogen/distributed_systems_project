@@ -38,7 +38,7 @@ object Task4 {
         (movieB, ratingB) = arr(j)
         val trimmedA = movieA.trim
         val trimmedB = movieB.trim
-        if trimmedA < trimmedB && ratingA == ratingB
+        if trimmedA < trimmedB && ratingA.trim == ratingB.trim
       } yield ((trimmedA, trimmedB), 1)
     }
 
