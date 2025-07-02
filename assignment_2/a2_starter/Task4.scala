@@ -1,6 +1,6 @@
 import org.apache.spark.{SparkConf, SparkContext}
 
-// Object name must stay as Task4 for the test harness
+// please don't change the object name
 object Task4 {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Task 4")
