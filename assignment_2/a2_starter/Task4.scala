@@ -30,7 +30,7 @@ object Task4 {
 
     // For each user, generate all pairs of movies they rated the same
     val moviePairs = userGrouped.flatMap { case (_, movieRatingIterable) =>
-      val arr = movieRatingIterable.toArray
+      val arr = movieRatingIterable.toSet.toArray // deduplicate (movie, rating) per user
       for {
         i <- arr.indices
         j <- (i + 1) until arr.length
