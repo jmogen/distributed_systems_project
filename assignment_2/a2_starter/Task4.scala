@@ -24,20 +24,30 @@ object Task4 {
       }
     }
 
-    // For each user, generate unique pairs of movies with the same rating
-    val moviePairs = userMovieRatings
-      .groupByKey()
-      .flatMap { case (_, movieRatingIterable) =>
-        val movieRatingList = movieRatingIterable.toArray
-        // Only consider each pair once (A < B)
+    // Partition by user index to parallelize pair generation
+    val numPartitions = 200 // Tune this based on your cluster size and data
+    val partitioned = userMovieRatings.partitionBy(new org.apache.spark.HashPartitioner(numPartitions))
+
+    // For each partition (i.e., for a subset of users), generate pairs efficiently
+    val moviePairs = partitioned.mapPartitions(iter => {
+      // Group by user index in the partition
+      val userMap = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String)]]()
+      iter.foreach { case (userIdx, (movie, rating)) =>
+        val list = userMap.getOrElseUpdate(userIdx, scala.collection.mutable.ListBuffer())
+        list += ((movie, rating))
+      }
+      // For each user, generate pairs
+      userMap.iterator.flatMap { case (_, movieRatingList) =>
+        val arr = movieRatingList.toArray
         for {
-          i <- movieRatingList.indices
-          j <- (i + 1) until movieRatingList.length
-          (movieA, ratingA) = movieRatingList(i)
-          (movieB, ratingB) = movieRatingList(j)
+          i <- arr.indices
+          j <- (i + 1) until arr.length
+          (movieA, ratingA) = arr(i)
+          (movieB, ratingB) = arr(j)
           if movieA < movieB && ratingA == ratingB
         } yield ((movieA, movieB), 1)
       }
+    })
 
     // Use reduceByKey to sum up similarities
     val similarityCounts = moviePairs
