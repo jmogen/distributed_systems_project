@@ -18,9 +18,10 @@ object Task4 {
 
     // For each user, emit (userIndex, (movie, rating))
     val userMovieRatings = movieRatings.flatMap { case (movie, ratings) =>
+      val trimmedMovie = movie.trim
       ratings.zipWithIndex.collect {
         case (rating, idx) if rating.nonEmpty =>
-          (idx, (movie, rating))
+          (idx, (trimmedMovie, rating))
       }
     }
 
@@ -31,8 +32,9 @@ object Task4 {
     val moviePairs = partitioned.mapPartitions(iter => {
       val userMap = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String)]]()
       iter.foreach { case (userIdx, (movie, rating)) =>
+        val trimmedMovie = movie.trim
         val list = userMap.getOrElseUpdate(userIdx, scala.collection.mutable.ListBuffer())
-        list += ((movie, rating))
+        list += ((trimmedMovie, rating))
       }
       userMap.iterator.flatMap { case (_, movieRatingList) =>
         val arr = movieRatingList.toArray
@@ -41,16 +43,34 @@ object Task4 {
           j <- (i + 1) until arr.length
           (movieA, ratingA) = arr(i)
           (movieB, ratingB) = arr(j)
-          if movieA < movieB && ratingA == ratingB
-        } yield ((movieA, movieB), 1)
+          val trimmedA = movieA.trim
+          val trimmedB = movieB.trim
+          if trimmedA < trimmedB && ratingA == ratingB
+        } yield ((trimmedA, trimmedB), 1)
       }
     })
 
     // Use reduceByKey to sum up similarities
-    val similarityCounts = moviePairs
-      .reduceByKey(_ + _)
-      .map { case ((a, b), count) => s"$a,$b,$count" }
+    val similarityCounts = moviePairs.reduceByKey(_ + _)
 
-    similarityCounts.saveAsTextFile(args(1))
+    // Get all movie names (for zero similarity pairs)
+    val allMovies = movieRatings.map(_._1.trim).distinct().collect().sorted
+
+    // Generate all possible pairs (lex order)
+    val allPairs = sc.parallelize(
+      for {
+        i <- allMovies.indices
+        j <- (i + 1) until allMovies.length
+      } yield (allMovies(i), allMovies(j))
+    )
+
+    // Join with similarity counts, fill in zeros where needed
+    val similarityMap = similarityCounts.map { case ((a, b), count) => ((a.trim, b.trim), count) }
+    val result = allPairs
+      .map(pair => (pair, 0))
+      .leftOuterJoin(similarityMap)
+      .map { case ((a, b), (zero, optCount)) => s"$a,$b,${optCount.getOrElse(0)}" }
+
+    result.saveAsTextFile(args(1))
   }
 }
