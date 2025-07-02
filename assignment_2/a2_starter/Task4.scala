@@ -66,7 +66,7 @@ object Task4 {
       j <- (i + 1) until allMovies.length
       movieA = allMovies(i)
       movieB = allMovies(j)
-    } yield (movieA, movieB))
+    } yield ((movieA, movieB), ()))
 
     // Join with similarity counts, fill missing with 0
     val similarityMap = similarity.map { case ((a, b), count) => ((a, b), count) }
