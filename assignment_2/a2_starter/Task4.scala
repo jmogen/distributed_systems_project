@@ -66,7 +66,9 @@ object Task4 {
     val result = allPairs
       .map(pair => (pair, 0))
       .leftOuterJoin(similarityMap)
-      .map { case ((a, b), (zero, optCount)) => s"$a,$b,${optCount.getOrElse(0)}" }
+      .map { case ((a, b), (zero, optCount)) => (a, b, optCount.getOrElse(0)) }
+      .sortBy(t => (t._1, t._2)) // Sort by movieA, then movieB
+      .map { case (a, b, count) => s"$a,$b,$count" }
 
     result.saveAsTextFile(args(1))
   }
