@@ -8,11 +8,16 @@ object Task4 {
 
     val textFile = sc.textFile(args(0))
 
-    // Parse each line into (movie, Array[rating])
+    // First, determine the maximum number of columns (users) in the file
+    val maxUsers = textFile.map { line =>
+      line.split(",", -1).length - 1
+    }.reduce(math.max)
+
+    // Parse each line into (movie, Array[rating]), padding to maxUsers
     val movieRatings = textFile.map { line =>
       val parts = line.split(",", -1)
       val movie = parts(0).trim
-      val ratings = parts.drop(1).map(_.trim)
+      val ratings = parts.drop(1).map(_.trim).padTo(maxUsers, "")
       (movie, ratings)
     }
 
