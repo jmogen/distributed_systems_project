@@ -10,9 +10,9 @@ object Task4 {
 
     // Parse each line into (movie, Array[rating])
     val movieRatings = textFile.map { line =>
-      val parts = line.split(",", -1).map(_.trim)
-      val movie = parts(0)
-      val ratings = parts.drop(1)
+      val parts = line.split(",", -1)
+      val movie = parts(0).trim
+      val ratings = parts.drop(1).map(_.trim)
       (movie, ratings)
     }
 
@@ -24,21 +24,12 @@ object Task4 {
       }
     }
 
-    // Partition by user index to parallelize pair generation
-    val numPartitions = 200 // Tune this based on your cluster size and data
-    val partitioned = userMovieRatings.partitionBy(new org.apache.spark.HashPartitioner(numPartitions))
-
-    // For each partition (i.e., for a subset of users), generate pairs efficiently
-    val moviePairs = partitioned.mapPartitions(iter => {
-      // Group by user index in the partition
-      val userMap = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String)]]()
-      iter.foreach { case (userIdx, (movie, rating)) =>
-        val list = userMap.getOrElseUpdate(userIdx, scala.collection.mutable.ListBuffer())
-        list += ((movie, rating))
-      }
-      // For each user, generate pairs
-      userMap.iterator.flatMap { case (_, movieRatingList) =>
-        val arr = movieRatingList.toArray
+    // For each user, generate unique pairs of movies with the same rating
+    val moviePairs = userMovieRatings
+      .groupByKey()
+      .flatMap { case (_, movieRatingIterable) =>
+        val arr = movieRatingIterable.toArray
+        // Only consider each pair once (A < B)
         for {
           i <- arr.indices
           j <- (i + 1) until arr.length
@@ -47,7 +38,6 @@ object Task4 {
           if movieA < movieB && ratingA == ratingB
         } yield ((movieA, movieB), 1)
       }
-    })
 
     // Use reduceByKey to sum up similarities
     val similarityCounts = moviePairs
