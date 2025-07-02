@@ -1,6 +1,6 @@
 import org.apache.spark.{SparkConf, SparkContext}
 
-// please don't change the object name
+// Object name must stay as Task4 for the test harness
 object Task4 {
   def main(args: Array[String]) {
     val conf = new SparkConf().setAppName("Task 4")
@@ -9,7 +9,7 @@ object Task4 {
     val inputPath = args(0)
     val outputPath = args(1)
 
-    // Read file: (movie, Array[rating strings])
+    // Read the input: (movie, Array of ratings)
     val moviesRDD = sc.textFile(inputPath)
       .map(_.trim)
       .filter(_.nonEmpty)
@@ -19,26 +19,31 @@ object Task4 {
         val ratings = parts.drop(1)
         (movie, ratings)
       }
+      // Repartition to 1 for best runtime on current input size
+      .repartition(2)
+      .cache()  // Cache since used multiple times (cartesian can be expensive)
 
-    // Cartesian self-join and filter unique pairs (lexicographic order)
+    // Cartesian self-join, filter unique pairs lex order (movieA < movieB)
     val moviePairs = moviesRDD.cartesian(moviesRDD)
       .filter { case ((movieA, _), (movieB, _)) => movieA < movieB }
 
-    // Compute similarity for each unique pair
+    // Compute similarity: count positions where ratings match exactly
     val similarities = moviePairs.map { case ((movieA, ratingsA), (movieB, ratingsB)) =>
       val minLen = math.min(ratingsA.length, ratingsB.length)
       var similarity = 0
       for (i <- 0 until minLen) {
-        val a = ratingsA(i)
-        val b = ratingsB(i)
-        if (a.nonEmpty && b.nonEmpty && a == b) {
+        if (ratingsA(i).nonEmpty && ratingsB(i).nonEmpty && ratingsA(i) == ratingsB(i)) {
           similarity += 1
         }
       }
       s"$movieA,$movieB,$similarity"
     }
 
-    // Save output (no need to sort; test script does it)
+    // Save output without sorting (test script will sort)
     similarities.saveAsTextFile(outputPath)
+
+    sc.stop()
   }
 }
+
+
