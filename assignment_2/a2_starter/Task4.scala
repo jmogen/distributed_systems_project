@@ -71,11 +71,8 @@ object Task4 {
     // Join with similarity counts, fill missing with 0
     val similarityMap = similarity.map { case ((a, b), count) => ((a, b), count) }
     val result = allPairs.leftOuterJoin(similarityMap).map {
-      case ((a, b), ((), Some(count))) => s"$a,$b,$count"
-      case ((a, b), ((), None)) => s"$a,$b,0"
-      case ((a, b), (x, Some(count))) => s"$a,$b,$count"
-      case ((a, b), (x, None)) => s"$a,$b,0"
-      case ((a, b), count: Int) => s"$a,$b,$count"
+      case ((a, b), (_, Some(count))) => s"$a,$b,$count"
+      case ((a, b), (_, None))        => s"$a,$b,0"
     }
 
     // Sort lexicographically
