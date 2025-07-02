@@ -18,7 +18,7 @@ echo --- Deleting
 rm *.jar
 rm *.class
 
-for ID in $(seq 1 4)
+for ID in $(seq 4 4)
 do
   echo --- Compiling Task${ID}
   $SCALA_HOME/bin/scalac -J-Xmx1g Task${ID}.scala
@@ -38,7 +38,7 @@ echo "Task#, Input, Time(s), Correct (Yes - 1, No - 0)" > ${USER}_output.txt
 
 for ID in $(seq 4 4)
 do
-  for i in $(seq 0 0);
+  for i in $(seq 0 5);
   do
   	INPUT=/a2_inputs/in$i.txt
   	OUTPUT=/user/${USER}/a2_starter_code_output_spark/in$i
