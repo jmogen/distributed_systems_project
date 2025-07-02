@@ -1,4 +1,4 @@
-import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.{SparkConf, SparkContext}
 
 // please don't change the object name
 object Task4 {
@@ -6,39 +6,44 @@ object Task4 {
     val conf = new SparkConf().setAppName("Task 4")
     val sc = new SparkContext(conf)
 
-    val textFile = sc.textFile(args(0))
+    val inputPath = args(0)
+    val outputPath = args(1)
 
-    // Read all lines and split into (movie name, ratings array)
-    val lines = textFile.map(line => {
-      val parts = line.split(",").map(_.trim)
-      val movie = parts(0)
-      val ratings = parts.drop(1)
-      (movie, ratings)
-    }).collect()
+    // Read the input: (movie, Array of ratings)
+    val moviesRDD = sc.textFile(inputPath)
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map { line =>
+        val parts = line.split(",").map(_.trim)
+        val movie = parts(0)
+        val ratings = parts.drop(1)
+        (movie, ratings)
+      }
+      // Repartition to 1 for best runtime on current input size
+      .repartition(2)
+      .cache()  // Cache since used multiple times (cartesian can be expensive)
 
-    // Get all unique pairs of movies (sorted lexicographically)
-    val moviePairs = for {
-      i <- lines.indices
-      j <- (i + 1) until lines.length
-      movieA = lines(i)._1
-      movieB = lines(j)._1
-      if movieA < movieB // lexicographic order
-    } yield ((movieA, lines(i)._2), (movieB, lines(j)._2))
+    // Cartesian self-join, filter unique pairs lex order (movieA < movieB)
+    val moviePairs = moviesRDD.cartesian(moviesRDD)
+      .filter { case ((movieA, _), (movieB, _)) => movieA < movieB }
 
-    // For each pair, compute similarity
-    val results = moviePairs.map { case ((movieA, ratingsA), (movieB, ratingsB)) =>
+    // Compute similarity: count positions where ratings match exactly
+    val similarities = moviePairs.map { case ((movieA, ratingsA), (movieB, ratingsB)) =>
       val minLen = math.min(ratingsA.length, ratingsB.length)
       var similarity = 0
-      for (k <- 0 until minLen) {
-        if (ratingsA(k).nonEmpty && ratingsB(k).nonEmpty && ratingsA(k) == ratingsB(k)) {
+      for (i <- 0 until minLen) {
+        if (ratingsA(i).nonEmpty && ratingsB(i).nonEmpty && ratingsA(i) == ratingsB(i)) {
           similarity += 1
         }
       }
       s"$movieA,$movieB,$similarity"
     }
 
-    // Output the results
-    val output = sc.parallelize(results)
-    output.saveAsTextFile(args(1))
+    // Save output without sorting (test script will sort)
+    similarities.saveAsTextFile(outputPath)
+
+    sc.stop()
   }
 }
+
+
