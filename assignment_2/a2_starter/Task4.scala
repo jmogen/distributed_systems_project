@@ -25,30 +25,22 @@ object Task4 {
       }
     }
 
-    val numPartitions = userMovieRatings.getNumPartitions
-    val partitioned = userMovieRatings.partitionBy(new org.apache.spark.HashPartitioner(numPartitions))
+    // Group all ratings for each user together
+    val userGrouped = userMovieRatings.groupByKey()
 
-    // Use mapPartitions to aggregate movie pairs locally per user
-    val moviePairs = partitioned.mapPartitions(iter => {
-      val userMap = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String)]]()
-      iter.foreach { case (userIdx, (movie, rating)) =>
-        val trimmedMovie = movie.trim
-        val list = userMap.getOrElseUpdate(userIdx, scala.collection.mutable.ListBuffer())
-        list += ((trimmedMovie, rating))
-      }
-      userMap.iterator.flatMap { case (_, movieRatingList) =>
-        val arr = movieRatingList.toArray
-        for {
-          i <- arr.indices
-          j <- (i + 1) until arr.length
-          (movieA, ratingA) = arr(i)
-          (movieB, ratingB) = arr(j)
-          val trimmedA = movieA.trim
-          val trimmedB = movieB.trim
-          if trimmedA < trimmedB && ratingA == ratingB
-        } yield ((trimmedA, trimmedB), 1)
-      }
-    })
+    // For each user, generate all pairs of movies they rated the same
+    val moviePairs = userGrouped.flatMap { case (_, movieRatingIterable) =>
+      val arr = movieRatingIterable.toArray
+      for {
+        i <- arr.indices
+        j <- (i + 1) until arr.length
+        (movieA, ratingA) = arr(i)
+        (movieB, ratingB) = arr(j)
+        val trimmedA = movieA.trim
+        val trimmedB = movieB.trim
+        if trimmedA < trimmedB && ratingA == ratingB
+      } yield ((trimmedA, trimmedB), 1)
+    }
 
     // Use reduceByKey to sum up similarities
     val similarityCounts = moviePairs.reduceByKey(_ + _)
