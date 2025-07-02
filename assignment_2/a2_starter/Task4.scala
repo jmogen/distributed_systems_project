@@ -8,6 +8,9 @@ object Task4 {
 
     val textFile = sc.textFile(args(0))
 
+    // Helper normalization function
+    def normalize(s: String): String = s.replaceAll("\\s+", " ").trim
+
     // First, determine the maximum number of columns (users) in the file
     val maxUsers = textFile.map { line =>
       line.split(",", -1).length - 1
@@ -16,17 +19,17 @@ object Task4 {
     // Parse each line into (movie, Array[rating]), padding to maxUsers
     val movieRatings = textFile.map { line =>
       val parts = line.split(",", -1)
-      val movie = parts(0).trim
+      val movie = normalize(parts(0))
       val ratings = parts.drop(1).map(_.trim).padTo(maxUsers, "")
       (movie, ratings)
     }
 
     // For each user, emit (userIndex, (movie, rating))
     val userMovieRatings = movieRatings.flatMap { case (movie, ratings) =>
-      val trimmedMovie = movie.trim
+      val normMovie = normalize(movie)
       ratings.zipWithIndex.collect {
         case (rating, idx) if rating.nonEmpty =>
-          (idx, (trimmedMovie, rating))
+          (idx, (normMovie, rating.trim))
       }
     }
 
@@ -41,17 +44,17 @@ object Task4 {
         j <- (i + 1) until arr.length
         (movieA, ratingA) = arr(i)
         (movieB, ratingB) = arr(j)
-        val trimmedA = movieA.trim
-        val trimmedB = movieB.trim
-        if trimmedA < trimmedB && ratingA.trim == ratingB.trim
-      } yield ((trimmedA, trimmedB), 1)
+        val normA = normalize(movieA)
+        val normB = normalize(movieB)
+        if normA < normB && ratingA == ratingB
+      } yield ((normA, normB), 1)
     }
 
     // Use reduceByKey to sum up similarities
     val similarityCounts = moviePairs.reduceByKey(_ + _)
 
     // Get all movie names (for zero similarity pairs)
-    val allMovies = movieRatings.map(_._1.trim).distinct().collect().sorted
+    val allMovies = movieRatings.map(_._1).distinct().collect().map(normalize).distinct.sorted
 
     // Generate all possible pairs (lex order)
     val allPairs = sc.parallelize(
@@ -62,11 +65,11 @@ object Task4 {
     )
 
     // Join with similarity counts, fill in zeros where needed
-    val similarityMap = similarityCounts.map { case ((a, b), count) => ((a.trim, b.trim), count) }
+    val similarityMap = similarityCounts.map { case ((a, b), count) => ((normalize(a), normalize(b)), count) }
     val result = allPairs
       .map(pair => (pair, 0))
       .leftOuterJoin(similarityMap)
-      .map { case ((a, b), (zero, optCount)) => (a, b, optCount.getOrElse(0)) }
+      .map { case ((a, b), (zero, optCount)) => (normalize(a), normalize(b), optCount.getOrElse(0)) }
       .sortBy(t => (t._1, t._2)) // Sort by movieA, then movieB
       .map { case (a, b, count) => s"$a,$b,$count" }
 
