@@ -7,7 +7,6 @@ object Task4 {
     val sc = new SparkContext(conf)
 
     val textFile = sc.textFile(args(0))
-    // TEST
     // Parse each line into (movie, Array[rating])
     val movieRatings = textFile.map { line =>
       val parts = line.split(",", -1)
@@ -24,7 +23,7 @@ object Task4 {
       }
     }
 
-    val partitioned = userMovieRatings.partitionBy(new org.apache.spark.HashPartitioner(numPartitions))
+    val partitioned = userMovieRatings.partitionBy(new org.apache.spark.HashPartitioner(userMovieRatings.getNumPartitions))
 
     val moviePairs = partitioned.mapPartitions(iter => {
       val userMap = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String)]]()
