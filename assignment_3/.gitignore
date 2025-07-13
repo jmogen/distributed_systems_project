@@ -1,0 +1,45 @@
+# Generated files
+gen-java/
+*.class
+*.jar
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build artifacts
+build/
+target/
+out/
+
+# Package files
+*.tar.gz
+*.zip
+
+# External test files
+TesterClient-fat.jar
+ThriftExamples.tar.gz
+TesterScript.tar.gz
+
+# Java specific
+*.hprof
+hs_err_pid*
+
+# Thrift generated files (will be regenerated)
+gen-java/
+
+# Assignment files
+requirements.md 
