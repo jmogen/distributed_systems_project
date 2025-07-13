@@ -2,10 +2,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.mindrot.jbcrypt.BCrypt;
+import org.apache.log4j.Logger;
 
 public class BcryptServiceHandler implements BcryptService.Iface {
+	static Logger log = Logger.getLogger(BcryptServiceHandler.class.getName());
 	public List<String> hashPassword(List<String> password, short logRounds) throws IllegalArgument, org.apache.thrift.TException
 	{
+		log.info("BE: hashPassword called with " + (password == null ? 0 : password.size()) + " items, logRounds=" + logRounds);
 		try {
 			// Validate logRounds
 			if (logRounds < 4 || logRounds > 31) {
@@ -35,6 +38,7 @@ public class BcryptServiceHandler implements BcryptService.Iface {
 
 	public List<Boolean> checkPassword(List<String> password, List<String> hash) throws IllegalArgument, org.apache.thrift.TException
 	{
+		log.info("BE: checkPassword called with " + (password == null ? 0 : password.size()) + " items");
 		try {
 			// Validate input lists
 			if (password == null || hash == null) {

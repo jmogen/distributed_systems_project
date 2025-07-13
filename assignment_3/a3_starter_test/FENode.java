@@ -111,6 +111,7 @@ public class FENode {
                     int s = start, e = start + size;
                     List<String> sub = password.subList(s, e);
                     BENodeInfo be = nodeList.get(i);
+                    log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
                     final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<String> vals;
@@ -183,6 +184,7 @@ public class FENode {
                     List<String> subPwd = password.subList(s, e);
                     List<String> subHash = hash.subList(s, e);
                     BENodeInfo be = nodeList.get(i);
+                    log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
                     final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<Boolean> vals;
