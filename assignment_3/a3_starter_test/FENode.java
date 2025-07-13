@@ -100,6 +100,7 @@ public class FENode {
                 start = 0;
                 for (int i = 0; i < k; i++) {
                     int size = batchSizes.get(i);
+                    if (size == 0) continue; // skip empty sub-batch
                     int s = start, e = start + size;
                     List<String> sub = password.subList(s, e);
                     BENodeInfo be = nodeList.get(i);
@@ -165,6 +166,7 @@ public class FENode {
                 start = 0;
                 for (int i = 0; i < k; i++) {
                     int size = batchSizes.get(i);
+                    if (size == 0) continue; // skip empty sub-batch
                     int s = start, e = start + size;
                     List<String> subPwd = password.subList(s, e);
                     List<String> subHash = hash.subList(s, e);
