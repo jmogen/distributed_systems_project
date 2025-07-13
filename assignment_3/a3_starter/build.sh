@@ -12,6 +12,8 @@ elif [ -f /usr/lib/jvm/java-8-openjdk-amd64/bin/javac ]; then
 	JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 elif [ -f /usr/lib/jvm/java-openjdk/bin/javac ]; then
 	JAVA_HOME=/usr/lib/jvm/java-openjdk
+elif [ -f /usr/bin/javac ]; then
+	JAVA_HOME=/usr
 else
 	echo "Unable to find java compiler :("
 	exit 1
@@ -19,7 +21,7 @@ fi
 
 JAVA=$JAVA_HOME/bin/java
 JAVA_CC=$JAVA_HOME/bin/javac
-THRIFT_CC=/opt/bin/thrift
+THRIFT_CC=thrift
 
 echo --- Cleaning
 rm -f *.jar
