@@ -17,6 +17,7 @@ import org.apache.thrift.transport.TFramedTransport;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.TMultiplexedProcessor;
 
 public class FENode {
 	static Logger log;
@@ -42,13 +43,15 @@ public class FENode {
 		int portFE = Integer.parseInt(args[0]);
 		log.info("Launching FE node on port " + portFE);
 
-		// launch Thrift server with simplified processor
-		BcryptService.Processor processor = new BcryptService.Processor<BcryptService.Iface>(new FEBcryptServiceHandler());
+		// launch Thrift server with multiplexed processor
+		TMultiplexedProcessor multiplexedProcessor = new TMultiplexedProcessor();
+		multiplexedProcessor.registerProcessor("BcryptService", new BcryptService.Processor<BcryptService.Iface>(new FEBcryptServiceHandler()));
+		multiplexedProcessor.registerProcessor("RegistrationService", new RegistrationService.Processor<RegistrationService.Iface>(new RegistrationServiceHandler()));
 		TServerSocket socket = new TServerSocket(portFE);
 		TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
 		sargs.protocolFactory(new TBinaryProtocol.Factory());
 		sargs.transportFactory(new TFramedTransport.Factory());
-		sargs.processorFactory(new TProcessorFactory(processor));
+		sargs.processorFactory(new TProcessorFactory(multiplexedProcessor));
 		sargs.maxWorkerThreads(64);
 		TThreadPoolServer server = new TThreadPoolServer(sargs);
 		server.serve();
@@ -126,6 +129,37 @@ public class FENode {
             } catch (Exception e) {
                 throw new IllegalArgument("Error in checkPassword: " + e.getMessage());
             }
+        }
+    }
+    
+    // Inner class to handle BE registration
+    static class RegistrationServiceHandler implements RegistrationService.Iface {
+        @Override
+        public void registerBE(String host, int port) throws IllegalArgument, org.apache.thrift.TException {
+            String key = host + ":" + port;
+            beNodesLock.writeLock().lock();
+            try {
+                if (!beNodes.containsKey(key)) {
+                    // Connect to BE node
+                    TTransport transport = new TFramedTransport(new TSocket(host, port));
+                    transport.open();
+                    TProtocol protocol = new TBinaryProtocol(transport);
+                    BcryptService.Client client = new BcryptService.Client(protocol);
+                    beNodes.put(key, new BENodeInfo(host, port, client, transport));
+                    log.info("BE node registered: " + key + " (total: " + beNodes.size() + ")");
+                }
+            } catch (Exception e) {
+                log.warn("Failed to register BE node: " + key + ", error: " + e.getMessage());
+                throw new IllegalArgument("Failed to register BE node: " + e.getMessage());
+            } finally {
+                beNodesLock.writeLock().unlock();
+            }
+        }
+        @Override
+        public void unregisterBE(String host, int port) throws IllegalArgument, org.apache.thrift.TException {
+            String key = host + ":" + port;
+            removeBENode(key);
+            log.info("BE node unregistered: " + key);
         }
     }
     

@@ -65,7 +65,7 @@ public class BENode {
 			TTransport transport = new TFramedTransport(sock);
 			TProtocol protocol = new TBinaryProtocol(transport);
 			
-			// Create multiplexed protocol to access RegistrationService
+			// Use multiplexed protocol for RegistrationService
 			TMultiplexedProtocol multiplexedProtocol = 
 				new TMultiplexedProtocol(protocol, "RegistrationService");
 			RegistrationService.Client regClient = new RegistrationService.Client(multiplexedProtocol);
