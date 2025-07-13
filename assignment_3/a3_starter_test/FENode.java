@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.*;
 
 import org.apache.log4j.BasicConfigurator;
 import org.apache.log4j.Logger;
@@ -61,45 +62,74 @@ public class FENode {
     
     // Inner class to handle BE registration and load balancing
     static class FEBcryptServiceHandler implements BcryptService.Iface {
-        
+        private static final int MAX_PARALLELISM = 8; // tune as needed
+        private final ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLELISM);
+
         @Override
         public List<String> hashPassword(List<String> password, short logRounds) throws IllegalArgument, org.apache.thrift.TException {
             try {
-                // Validate inputs first
                 if (logRounds < 4 || logRounds > 31) {
                     throw new IllegalArgument("logRounds must be between 4 and 31");
                 }
                 if (password == null || password.isEmpty()) {
                     throw new IllegalArgument("Password list cannot be null or empty");
                 }
-                
-                // Try to use BE nodes for load balancing
-                BENodeInfo selectedBE = selectBENode();
-                if (selectedBE != null) {
-                    try {
-                        return selectedBE.client.hashPassword(password, logRounds);
-                    } catch (Exception e) {
-                        log.warn("BE node failed, removing from registry: " + selectedBE.host + ":" + selectedBE.port);
-                        removeBENode(selectedBE.host + ":" + selectedBE.port);
-                        // Fall back to local processing
-                    }
+
+                List<BENodeInfo> nodeList;
+                beNodesLock.readLock().lock();
+                try {
+                    nodeList = new ArrayList<>(beNodes.values());
+                } finally {
+                    beNodesLock.readLock().unlock();
                 }
-                
-                // Fall back to local processing
-                log.info("No BE nodes available, using local processing");
-                return localHandler.hashPassword(password, logRounds);
-                
+
+                if (nodeList.isEmpty()) {
+                    log.info("No BE nodes available, using local processing");
+                    return localHandler.hashPassword(password, logRounds);
+                }
+
+                int n = password.size();
+                int k = nodeList.size();
+                List<Future<List<String>>> futures = new ArrayList<>();
+                List<Integer> batchSizes = new ArrayList<>();
+                int base = n / k, rem = n % k, start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = base + (i < rem ? 1 : 0);
+                    batchSizes.add(size);
+                }
+                start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = batchSizes.get(i);
+                    int s = start, e = start + size;
+                    List<String> sub = password.subList(s, e);
+                    BENodeInfo be = nodeList.get(i);
+                    futures.add(executor.submit(() -> {
+                        try {
+                            return be.client.hashPassword(sub, logRounds);
+                        } catch (Exception ex) {
+                            log.warn("BE node failed, removing from registry: " + be.host + ":" + be.port);
+                            removeBENode(be.host + ":" + be.port);
+                            // fallback to local
+                            return localHandler.hashPassword(sub, logRounds);
+                        }
+                    }));
+                    start = e;
+                }
+                List<String> result = new ArrayList<>(n);
+                for (int i = 0; i < k; i++) {
+                    result.addAll(futures.get(i).get());
+                }
+                return result;
             } catch (IllegalArgument e) {
                 throw e;
             } catch (Exception e) {
                 throw new IllegalArgument("Error in hashPassword: " + e.getMessage());
             }
         }
-        
+
         @Override
         public List<Boolean> checkPassword(List<String> password, List<String> hash) throws IllegalArgument, org.apache.thrift.TException {
             try {
-                // Validate inputs first
                 if (password == null || hash == null) {
                     throw new IllegalArgument("Password and hash lists cannot be null");
                 }
@@ -109,23 +139,53 @@ public class FENode {
                 if (password.isEmpty()) {
                     throw new IllegalArgument("Password and hash lists cannot be empty");
                 }
-                
-                // Try to use BE nodes for load balancing
-                BENodeInfo selectedBE = selectBENode();
-                if (selectedBE != null) {
-                    try {
-                        return selectedBE.client.checkPassword(password, hash);
-                    } catch (Exception e) {
-                        log.warn("BE node failed, removing from registry: " + selectedBE.host + ":" + selectedBE.port);
-                        removeBENode(selectedBE.host + ":" + selectedBE.port);
-                        // Fall back to local processing
-                    }
+
+                List<BENodeInfo> nodeList;
+                beNodesLock.readLock().lock();
+                try {
+                    nodeList = new ArrayList<>(beNodes.values());
+                } finally {
+                    beNodesLock.readLock().unlock();
                 }
-                
-                // Fall back to local processing
-                log.info("No BE nodes available, using local processing");
-                return localHandler.checkPassword(password, hash);
-                
+
+                if (nodeList.isEmpty()) {
+                    log.info("No BE nodes available, using local processing");
+                    return localHandler.checkPassword(password, hash);
+                }
+
+                int n = password.size();
+                int k = nodeList.size();
+                List<Future<List<Boolean>>> futures = new ArrayList<>();
+                List<Integer> batchSizes = new ArrayList<>();
+                int base = n / k, rem = n % k, start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = base + (i < rem ? 1 : 0);
+                    batchSizes.add(size);
+                }
+                start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = batchSizes.get(i);
+                    int s = start, e = start + size;
+                    List<String> subPwd = password.subList(s, e);
+                    List<String> subHash = hash.subList(s, e);
+                    BENodeInfo be = nodeList.get(i);
+                    futures.add(executor.submit(() -> {
+                        try {
+                            return be.client.checkPassword(subPwd, subHash);
+                        } catch (Exception ex) {
+                            log.warn("BE node failed, removing from registry: " + be.host + ":" + be.port);
+                            removeBENode(be.host + ":" + be.port);
+                            // fallback to local
+                            return localHandler.checkPassword(subPwd, subHash);
+                        }
+                    }));
+                    start = e;
+                }
+                List<Boolean> result = new ArrayList<>(n);
+                for (int i = 0; i < k; i++) {
+                    result.addAll(futures.get(i).get());
+                }
+                return result;
             } catch (IllegalArgument e) {
                 throw e;
             } catch (Exception e) {
