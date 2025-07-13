@@ -48,8 +48,21 @@ public class BENode {
 		// Start the server in a new thread
 		new Thread(() -> server.serve()).start();
 
-		// Now register with FE
-		registerWithFE(hostFE, portFE, portBE);
+		// Periodically try to register with FE
+		new Thread(() -> {
+			while (true) {
+				try {
+					registerWithFE(hostFE, portFE, portBE);
+				} catch (Exception e) {
+					// Already logged in registerWithFE
+				}
+				try {
+					Thread.sleep(5000); // 5 seconds between attempts
+				} catch (InterruptedException ie) {
+					break;
+				}
+			}
+		}).start();
 	}
 
 	static String getHostName()
