@@ -1,0 +1,6 @@
+0 [main] INFO FENode  - Launching FE node on port 18388
+3654 [pool-1-thread-2] INFO FENode  - No BE nodes available, using local processing
+3699 [pool-1-thread-3] INFO FENode  - No BE nodes available, using local processing
+3726 [pool-1-thread-3] INFO FENode  - No BE nodes available, using local processing
+3744 [pool-1-thread-4] INFO FENode  - No BE nodes available, using local processing
+3777 [pool-1-thread-5] INFO FENode  - No BE nodes available, using local processing

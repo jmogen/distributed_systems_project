@@ -1,0 +1,4 @@
+1 [main] INFO BENode  - Launching BE node on port 19351 at host eceubuntu1
+4 [main] INFO BENode  - Registering with FE at localhost:19350
+32 [main] WARN BENode  - Failed to register with FE: Invalid method name: 'RegistrationService:registerBE'
+34 [main] INFO BENode  - BE node will still serve requests locally on port 19351

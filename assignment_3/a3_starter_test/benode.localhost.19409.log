@@ -1,0 +1,4 @@
+0 [main] INFO BENode  - Launching BE node on port 19409 at host eceubuntu1
+4 [main] INFO BENode  - Registering with FE at localhost:19408
+22 [main] WARN BENode  - Failed to register with FE: java.net.ConnectException: Connection refused
+24 [main] INFO BENode  - BE node will still serve requests locally on port 19409
