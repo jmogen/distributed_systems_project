@@ -63,7 +63,7 @@ public class FENode {
     
     // Inner class to handle BE registration and load balancing
     static class FEBcryptServiceHandler implements BcryptService.Iface {
-        private static final int MAX_PARALLELISM = 8; // tune as needed
+        private static final int MAX_PARALLELISM = Math.max(8, Runtime.getRuntime().availableProcessors());
         private final ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLELISM);
 
         private static class SubBatchResult<T> {
