@@ -8,6 +8,7 @@ import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TFramedTransport;
 import org.apache.thrift.transport.TTransportFactory;
+import org.apache.thrift.protocol.TMultiplexedProtocol;
 
 public class Client {
 	public static void main(String [] args) {
@@ -20,7 +21,9 @@ public class Client {
 			TSocket sock = new TSocket(args[0], Integer.parseInt(args[1]));
 			TTransport transport = new TFramedTransport(sock);
 			TProtocol protocol = new TBinaryProtocol(transport);
-			BcryptService.Client client = new BcryptService.Client(protocol);
+			// Use multiplexed protocol for BcryptService
+			TMultiplexedProtocol mp = new TMultiplexedProtocol(protocol, "BcryptService");
+			BcryptService.Client client = new BcryptService.Client(mp);
 			transport.open();
 
 			List<String> password = new ArrayList<>();
