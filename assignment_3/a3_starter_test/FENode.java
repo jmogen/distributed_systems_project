@@ -114,20 +114,31 @@ public class FENode {
                     BENodeInfo be = nodeList.get(i);
                     log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
                     final int subStart = s;
+                    final String beHost = be.host;
+                    final int bePort = be.port;
                     futures.add(executor.submit(() -> {
                         List<String> vals = null;
                         boolean success = false;
                         for (int attempt = 0; attempt < 2; attempt++) {
+                            TTransport transport = null;
                             try {
-                                vals = be.client.hashPassword(sub, logRounds);
+                                transport = new TFramedTransport(new TSocket(beHost, bePort));
+                                transport.open();
+                                TProtocol protocol = new TBinaryProtocol(transport);
+                                BcryptService.Client client = new BcryptService.Client(protocol);
+                                vals = client.hashPassword(sub, logRounds);
                                 success = true;
                                 break;
                             } catch (Exception ex) {
-                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + be.host + ":" + be.port);
+                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + beHost + ":" + bePort);
                                 if (attempt == 1) {
-                                    log.warn("BE node failed after retry, removing from registry: " + be.host + ":" + be.port);
-                                    removeBENode(be.host + ":" + be.port);
+                                    log.warn("BE node failed after retry, removing from registry: " + beHost + ":" + bePort);
+                                    removeBENode(beHost + ":" + bePort);
                                     vals = localHandler.hashPassword(sub, logRounds);
+                                }
+                            } finally {
+                                if (transport != null) {
+                                    try { transport.close(); } catch (Exception ignore) {}
                                 }
                             }
                         }
@@ -195,20 +206,31 @@ public class FENode {
                     BENodeInfo be = nodeList.get(i);
                     log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
                     final int subStart = s;
+                    final String beHost = be.host;
+                    final int bePort = be.port;
                     futures.add(executor.submit(() -> {
                         List<Boolean> vals = null;
                         boolean success = false;
                         for (int attempt = 0; attempt < 2; attempt++) {
+                            TTransport transport = null;
                             try {
-                                vals = be.client.checkPassword(subPwd, subHash);
+                                transport = new TFramedTransport(new TSocket(beHost, bePort));
+                                transport.open();
+                                TProtocol protocol = new TBinaryProtocol(transport);
+                                BcryptService.Client client = new BcryptService.Client(protocol);
+                                vals = client.checkPassword(subPwd, subHash);
                                 success = true;
                                 break;
                             } catch (Exception ex) {
-                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + be.host + ":" + be.port);
+                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + beHost + ":" + bePort);
                                 if (attempt == 1) {
-                                    log.warn("BE node failed after retry, removing from registry: " + be.host + ":" + be.port);
-                                    removeBENode(be.host + ":" + be.port);
+                                    log.warn("BE node failed after retry, removing from registry: " + beHost + ":" + bePort);
+                                    removeBENode(beHost + ":" + bePort);
                                     vals = localHandler.checkPassword(subPwd, subHash);
+                                }
+                            } finally {
+                                if (transport != null) {
+                                    try { transport.close(); } catch (Exception ignore) {}
                                 }
                             }
                         }
@@ -240,12 +262,7 @@ public class FENode {
             beNodesLock.writeLock().lock();
             try {
                 if (!beNodes.containsKey(key)) {
-                    // Connect to BE node
-                    TTransport transport = new TFramedTransport(new TSocket(host, port));
-                    transport.open();
-                    TProtocol protocol = new TBinaryProtocol(transport);
-                    BcryptService.Client client = new BcryptService.Client(protocol);
-                    beNodes.put(key, new BENodeInfo(host, port, client, transport));
+                    beNodes.put(key, new BENodeInfo(host, port));
                     log.info("BE node registered: " + key + " (total: " + beNodes.size() + ")");
                 }
             } catch (Exception e) {
@@ -285,11 +302,6 @@ public class FENode {
         try {
             BENodeInfo beInfo = beNodes.remove(key);
             if (beInfo != null) {
-                try {
-                    beInfo.transport.close();
-                } catch (Exception e) {
-                    log.warn("Error closing BE transport: " + e.getMessage());
-                }
                 log.info("BE node removed: " + key + " (total: " + beNodes.size() + ")");
             }
         } finally {
@@ -301,14 +313,9 @@ public class FENode {
     static class BENodeInfo {
         String host;
         int port;
-        BcryptService.Client client;
-        TTransport transport;
-        
-        BENodeInfo(String host, int port, BcryptService.Client client, TTransport transport) {
+        BENodeInfo(String host, int port) {
             this.host = host;
             this.port = port;
-            this.client = client;
-            this.transport = transport;
         }
     }
 }
