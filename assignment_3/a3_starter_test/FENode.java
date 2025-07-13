@@ -116,19 +116,18 @@ public class FENode {
                     final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<String> vals = null;
-                        int attempts = 0;
-                        while (attempts < 2) {
+                        boolean success = false;
+                        for (int attempt = 0; attempt < 2; attempt++) {
                             try {
                                 vals = be.client.hashPassword(sub, logRounds);
+                                success = true;
                                 break;
                             } catch (Exception ex) {
-                                attempts++;
-                                if (attempts >= 2) {
+                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + be.host + ":" + be.port);
+                                if (attempt == 1) {
                                     log.warn("BE node failed after retry, removing from registry: " + be.host + ":" + be.port);
                                     removeBENode(be.host + ":" + be.port);
                                     vals = localHandler.hashPassword(sub, logRounds);
-                                } else {
-                                    log.warn("BE node failed, retrying: " + be.host + ":" + be.port);
                                 }
                             }
                         }
@@ -198,19 +197,18 @@ public class FENode {
                     final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<Boolean> vals = null;
-                        int attempts = 0;
-                        while (attempts < 2) {
+                        boolean success = false;
+                        for (int attempt = 0; attempt < 2; attempt++) {
                             try {
                                 vals = be.client.checkPassword(subPwd, subHash);
+                                success = true;
                                 break;
                             } catch (Exception ex) {
-                                attempts++;
-                                if (attempts >= 2) {
+                                log.warn("BE node failed (attempt " + (attempt+1) + "): " + be.host + ":" + be.port);
+                                if (attempt == 1) {
                                     log.warn("BE node failed after retry, removing from registry: " + be.host + ":" + be.port);
                                     removeBENode(be.host + ":" + be.port);
                                     vals = localHandler.checkPassword(subPwd, subHash);
-                                } else {
-                                    log.warn("BE node failed, retrying: " + be.host + ":" + be.port);
                                 }
                             }
                         }
