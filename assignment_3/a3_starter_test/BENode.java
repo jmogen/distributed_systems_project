@@ -44,7 +44,12 @@ public class BENode {
 		sargs.processorFactory(new TProcessorFactory(processor));
 		sargs.maxWorkerThreads(64);
 		TThreadPoolServer server = new TThreadPoolServer(sargs);
-		server.serve();
+
+		// Start the server in a new thread
+		new Thread(() -> server.serve()).start();
+
+		// Now register with FE
+		registerWithFE(hostFE, portFE, portBE);
 	}
 
 	static String getHostName()
