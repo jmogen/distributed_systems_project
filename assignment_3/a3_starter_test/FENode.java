@@ -66,11 +66,11 @@ public class FENode {
         private static final int MAX_PARALLELISM = Math.max(8, Runtime.getRuntime().availableProcessors());
         private final ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLELISM);
 
-        // Update SubBatchResult to hold indices
+        // Update SubBatchResult to hold start index
         private static class SubBatchResult<T> {
-            List<Integer> indices;
+            int start;
             List<T> values;
-            SubBatchResult(List<Integer> indices, List<T> values) { this.indices = indices; this.values = values; }
+            SubBatchResult(int start, List<T> values) { this.start = start; this.values = values; }
         }
 
         @Override
@@ -99,16 +99,21 @@ public class FENode {
                 int n = password.size();
                 int k = nodeList.size();
                 List<Future<SubBatchResult<String>>> futures = new ArrayList<>();
-                // Round-robin assignment: each password goes to a BE in turn
+                List<Integer> batchSizes = new ArrayList<>();
+                int base = n / k, rem = n % k, start = 0;
                 for (int i = 0; i < k; i++) {
-                    final int beIndex = i;
-                    List<Integer> indices = new ArrayList<>();
-                    for (int j = i; j < n; j += k) indices.add(j);
-                    if (indices.isEmpty()) continue;
-                    List<String> sub = new ArrayList<>();
-                    for (int idx : indices) sub.add(password.get(idx));
-                    BENodeInfo be = nodeList.get(beIndex);
-                    log.info("Dispatching sub-batch of size " + sub.size() + " to BE " + be.host + ":" + be.port);
+                    int size = base + (i < rem ? 1 : 0);
+                    batchSizes.add(size);
+                }
+                start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = batchSizes.get(i);
+                    if (size == 0) continue;
+                    int s = start, e = start + size;
+                    List<String> sub = password.subList(s, e);
+                    BENodeInfo be = nodeList.get(i);
+                    log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
+                    final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<String> vals = null;
                         int attempts = 0;
@@ -127,14 +132,15 @@ public class FENode {
                                 }
                             }
                         }
-                        return new SubBatchResult<>(indices, vals);
+                        return new SubBatchResult<>(subStart, vals);
                     }));
+                    start = e;
                 }
                 List<String> result = new ArrayList<>(Collections.nCopies(n, null));
                 for (Future<SubBatchResult<String>> f : futures) {
                     SubBatchResult<String> subRes = f.get();
-                    for (int j = 0; j < subRes.indices.size(); j++) {
-                        result.set(subRes.indices.get(j), subRes.values.get(j));
+                    for (int j = 0; j < subRes.values.size(); j++) {
+                        result.set(subRes.start + j, subRes.values.get(j));
                     }
                 }
                 return result;
@@ -174,20 +180,22 @@ public class FENode {
                 int n = password.size();
                 int k = nodeList.size();
                 List<Future<SubBatchResult<Boolean>>> futures = new ArrayList<>();
-                // Round-robin assignment: each password goes to a BE in turn
+                List<Integer> batchSizes = new ArrayList<>();
+                int base = n / k, rem = n % k, start = 0;
                 for (int i = 0; i < k; i++) {
-                    final int beIndex = i;
-                    List<Integer> indices = new ArrayList<>();
-                    for (int j = i; j < n; j += k) indices.add(j);
-                    if (indices.isEmpty()) continue;
-                    List<String> subPwd = new ArrayList<>();
-                    List<String> subHash = new ArrayList<>();
-                    for (int idx : indices) {
-                        subPwd.add(password.get(idx));
-                        subHash.add(hash.get(idx));
-                    }
-                    BENodeInfo be = nodeList.get(beIndex);
-                    log.info("Dispatching sub-batch of size " + subPwd.size() + " to BE " + be.host + ":" + be.port);
+                    int size = base + (i < rem ? 1 : 0);
+                    batchSizes.add(size);
+                }
+                start = 0;
+                for (int i = 0; i < k; i++) {
+                    int size = batchSizes.get(i);
+                    if (size == 0) continue;
+                    int s = start, e = start + size;
+                    List<String> subPwd = password.subList(s, e);
+                    List<String> subHash = hash.subList(s, e);
+                    BENodeInfo be = nodeList.get(i);
+                    log.info("Dispatching sub-batch of size " + size + " to BE " + be.host + ":" + be.port);
+                    final int subStart = s;
                     futures.add(executor.submit(() -> {
                         List<Boolean> vals = null;
                         int attempts = 0;
@@ -206,14 +214,15 @@ public class FENode {
                                 }
                             }
                         }
-                        return new SubBatchResult<>(indices, vals);
+                        return new SubBatchResult<>(subStart, vals);
                     }));
+                    start = e;
                 }
                 List<Boolean> result = new ArrayList<>(Collections.nCopies(n, null));
                 for (Future<SubBatchResult<Boolean>> f : futures) {
                     SubBatchResult<Boolean> subRes = f.get();
-                    for (int j = 0; j < subRes.indices.size(); j++) {
-                        result.set(subRes.indices.get(j), subRes.values.get(j));
+                    for (int j = 0; j < subRes.values.size(); j++) {
+                        result.set(subRes.start + j, subRes.values.get(j));
                     }
                 }
                 return result;
