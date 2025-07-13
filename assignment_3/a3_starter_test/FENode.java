@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.*;
+import java.util.Collections;
 
 import org.apache.log4j.BasicConfigurator;
 import org.apache.log4j.Logger;
@@ -65,6 +66,12 @@ public class FENode {
         private static final int MAX_PARALLELISM = 8; // tune as needed
         private final ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLELISM);
 
+        private static class SubBatchResult<T> {
+            int start;
+            List<T> values;
+            SubBatchResult(int start, List<T> values) { this.start = start; this.values = values; }
+        }
+
         @Override
         public List<String> hashPassword(List<String> password, short logRounds) throws IllegalArgument, org.apache.thrift.TException {
             try {
@@ -90,7 +97,7 @@ public class FENode {
 
                 int n = password.size();
                 int k = nodeList.size();
-                List<Future<List<String>>> futures = new ArrayList<>();
+                List<Future<SubBatchResult<String>>> futures = new ArrayList<>();
                 List<Integer> batchSizes = new ArrayList<>();
                 int base = n / k, rem = n % k, start = 0;
                 for (int i = 0; i < k; i++) {
@@ -104,21 +111,26 @@ public class FENode {
                     int s = start, e = start + size;
                     List<String> sub = password.subList(s, e);
                     BENodeInfo be = nodeList.get(i);
+                    final int subStart = s;
                     futures.add(executor.submit(() -> {
+                        List<String> vals;
                         try {
-                            return be.client.hashPassword(sub, logRounds);
+                            vals = be.client.hashPassword(sub, logRounds);
                         } catch (Exception ex) {
                             log.warn("BE node failed, removing from registry: " + be.host + ":" + be.port);
                             removeBENode(be.host + ":" + be.port);
-                            // fallback to local
-                            return localHandler.hashPassword(sub, logRounds);
+                            vals = localHandler.hashPassword(sub, logRounds);
                         }
+                        return new SubBatchResult<>(subStart, vals);
                     }));
                     start = e;
                 }
-                List<String> result = new ArrayList<>(n);
-                for (int i = 0; i < k; i++) {
-                    result.addAll(futures.get(i).get());
+                List<String> result = new ArrayList<>(Collections.nCopies(n, null));
+                for (Future<SubBatchResult<String>> f : futures) {
+                    SubBatchResult<String> subRes = f.get();
+                    for (int j = 0; j < subRes.values.size(); j++) {
+                        result.set(subRes.start + j, subRes.values.get(j));
+                    }
                 }
                 return result;
             } catch (IllegalArgument e) {
@@ -156,7 +168,7 @@ public class FENode {
 
                 int n = password.size();
                 int k = nodeList.size();
-                List<Future<List<Boolean>>> futures = new ArrayList<>();
+                List<Future<SubBatchResult<Boolean>>> futures = new ArrayList<>();
                 List<Integer> batchSizes = new ArrayList<>();
                 int base = n / k, rem = n % k, start = 0;
                 for (int i = 0; i < k; i++) {
@@ -171,21 +183,26 @@ public class FENode {
                     List<String> subPwd = password.subList(s, e);
                     List<String> subHash = hash.subList(s, e);
                     BENodeInfo be = nodeList.get(i);
+                    final int subStart = s;
                     futures.add(executor.submit(() -> {
+                        List<Boolean> vals;
                         try {
-                            return be.client.checkPassword(subPwd, subHash);
+                            vals = be.client.checkPassword(subPwd, subHash);
                         } catch (Exception ex) {
                             log.warn("BE node failed, removing from registry: " + be.host + ":" + be.port);
                             removeBENode(be.host + ":" + be.port);
-                            // fallback to local
-                            return localHandler.checkPassword(subPwd, subHash);
+                            vals = localHandler.checkPassword(subPwd, subHash);
                         }
+                        return new SubBatchResult<>(subStart, vals);
                     }));
                     start = e;
                 }
-                List<Boolean> result = new ArrayList<>(n);
-                for (int i = 0; i < k; i++) {
-                    result.addAll(futures.get(i).get());
+                List<Boolean> result = new ArrayList<>(Collections.nCopies(n, null));
+                for (Future<SubBatchResult<Boolean>> f : futures) {
+                    SubBatchResult<Boolean> subRes = f.get();
+                    for (int j = 0; j < subRes.values.size(); j++) {
+                        result.set(subRes.start + j, subRes.values.get(j));
+                    }
                 }
                 return result;
             } catch (IllegalArgument e) {
