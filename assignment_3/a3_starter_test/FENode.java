@@ -87,6 +87,7 @@ public class FENode {
                 beNodesLock.readLock().lock();
                 try {
                     nodeList = new ArrayList<>(beNodes.values());
+                    Collections.shuffle(nodeList); // Shuffle to ensure fair distribution
                 } finally {
                     beNodesLock.readLock().unlock();
                 }
@@ -178,6 +179,7 @@ public class FENode {
                 beNodesLock.readLock().lock();
                 try {
                     nodeList = new ArrayList<>(beNodes.values());
+                    Collections.shuffle(nodeList); // Shuffle to ensure fair distribution
                 } finally {
                     beNodesLock.readLock().unlock();
                 }
