@@ -47,6 +47,8 @@ public class FENode {
 		TMultiplexedProcessor multiplexedProcessor = new TMultiplexedProcessor();
 		multiplexedProcessor.registerProcessor("BcryptService", new BcryptService.Processor<BcryptService.Iface>(new FEBcryptServiceHandler()));
 		multiplexedProcessor.registerProcessor("RegistrationService", new RegistrationService.Processor<RegistrationService.Iface>(new RegistrationServiceHandler()));
+		// Register default processor for non-multiplexed clients
+		multiplexedProcessor.registerDefault(new BcryptService.Processor<BcryptService.Iface>(new FEBcryptServiceHandler()));
 		TServerSocket socket = new TServerSocket(portFE);
 		TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
 		sargs.protocolFactory(new TBinaryProtocol.Factory());
