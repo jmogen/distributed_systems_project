@@ -139,38 +139,47 @@ public class StorageNode {
                     TProtocol protocol = new TBinaryProtocol(transport);
                     KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
                     
-                    // Use enhanced state synchronization with version tracking
+                    // Use chunked state synchronization for large datasets
                     try {
-                        Map<String, String> stateWithVersions = primaryClient.getCurrentStateWithVersions();
-                        
-                        // Extract state and versions
-                        Map<String, String> state = new HashMap<>();
-                        Map<String, Long> versions = new HashMap<>();
-                        
-                        for (Map.Entry<String, String> entry : stateWithVersions.entrySet()) {
-                            String key = entry.getKey();
-                            String value = entry.getValue();
-                            
-                            if (key.startsWith("__version_")) {
-                                // This is a version entry
-                                String actualKey = key.substring(10); // Remove "__version_" prefix
-                                try {
-                                    versions.put(actualKey, Long.parseLong(value));
-                                } catch (NumberFormatException e) {
-                                    log.warn("Invalid version format for key: " + actualKey);
+                        // Try chunked transfer first
+                        boolean chunkedSuccess = false;
+                        try {
+                            Map<String, String> firstChunk = primaryClient.getCurrentStateChunk(0);
+                            String totalChunksStr = firstChunk.get("__total_chunks");
+                            if (totalChunksStr != null) {
+                                int totalChunks = Integer.parseInt(totalChunksStr);
+                                log.info("Starting chunked state transfer with " + totalChunks + " chunks");
+                                
+                                // Transfer all chunks
+                                for (int i = 0; i < totalChunks; i++) {
+                                    Map<String, String> chunk = primaryClient.getCurrentStateChunk(i);
+                                    boolean isLastChunk = Boolean.parseBoolean(chunk.get("__is_last_chunk"));
+                                    
+                                    // Remove metadata
+                                    chunk.remove("__chunk_id");
+                                    chunk.remove("__total_chunks");
+                                    chunk.remove("__is_last_chunk");
+                                    
+                                    handler.syncStateChunked(chunk, i, isLastChunk);
+                                    
+                                    if (isLastChunk) {
+                                        chunkedSuccess = true;
+                                        break;
+                                    }
                                 }
-                            } else if (!key.equals("__state_version")) {
-                                // This is a regular state entry
-                                state.put(key, value);
                             }
+                        } catch (Exception e) {
+                            log.warn("Chunked transfer failed, falling back to basic sync", e);
                         }
                         
-                        handler.syncStateWithVersions(state, versions);
+                        if (!chunkedSuccess) {
+                            // Fallback to basic sync
+                            Map<String, String> state = primaryClient.getCurrentState();
+                            handler.syncState(state);
+                        }
+                        
                     } catch (Exception e) {
-                        log.warn("Enhanced sync failed, falling back to basic sync", e);
-                        // Fallback to basic sync
-                        Map<String, String> state = primaryClient.getCurrentState();
-                        handler.syncState(state);
+                        log.error("Failed to sync state from primary", e);
                     }
                     
                     transport.close();

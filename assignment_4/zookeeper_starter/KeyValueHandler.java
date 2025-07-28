@@ -46,6 +46,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
     // State synchronization tracking
     private volatile boolean isStateSyncing = false;
     private final Object stateSyncLock = new Object();
+    
+    // Chunked state transfer
+    private static final int CHUNK_SIZE = 1000; // Transfer 1000 keys at a time
 
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
         this.host = host;
@@ -198,6 +201,35 @@ public class KeyValueHandler implements KeyValueService.Iface {
         }
     }
 
+    // Chunked state synchronization
+    public void syncStateChunked(Map<String, String> state, int chunkId, boolean isLastChunk) throws org.apache.thrift.TException {
+        try {
+            synchronized(stateSyncLock) {
+                if (chunkId == 0) {
+                    // First chunk - clear existing state
+                    isStateSyncing = true;
+                    myMapRef.set(new ConcurrentHashMap<>());
+                }
+                
+                // Add chunk to current state
+                Map<String, String> currentMap = myMapRef.get();
+                currentMap.putAll(state);
+                
+                if (isLastChunk) {
+                    // Last chunk - update state version
+                    stateVersion = System.currentTimeMillis();
+                    isStateSyncing = false;
+                    log.info("syncStateChunked: completed, total size=" + currentMap.size());
+                } else {
+                    log.info("syncStateChunked: chunk " + chunkId + ", size=" + state.size());
+                }
+            }
+        } catch (Exception e) {
+            log.error("Exception in syncStateChunked", e);
+            throw new org.apache.thrift.TException(e);
+        }
+    }
+
     // Enhanced state synchronization with version tracking
     public void syncStateWithVersions(Map<String, String> state, Map<String, Long> versions) throws org.apache.thrift.TException {
         try {
@@ -245,6 +277,37 @@ public class KeyValueHandler implements KeyValueService.Iface {
             return new HashMap<>(currentMap);
         } catch (Exception e) {
             log.error("Exception in getCurrentState", e);
+            throw new org.apache.thrift.TException(e);
+        }
+    }
+
+    // Get state in chunks
+    public Map<String, String> getCurrentStateChunk(int chunkId) throws org.apache.thrift.TException {
+        try {
+            while (isStateSyncing) {
+                Thread.yield();
+            }
+            
+            Map<String, String> currentMap = myMapRef.get();
+            List<String> keys = new ArrayList<>(currentMap.keySet());
+            
+            int startIndex = chunkId * CHUNK_SIZE;
+            int endIndex = Math.min(startIndex + CHUNK_SIZE, keys.size());
+            
+            Map<String, String> chunk = new HashMap<>();
+            for (int i = startIndex; i < endIndex; i++) {
+                String key = keys.get(i);
+                chunk.put(key, currentMap.get(key));
+            }
+            
+            // Add metadata
+            chunk.put("__chunk_id", String.valueOf(chunkId));
+            chunk.put("__total_chunks", String.valueOf((keys.size() + CHUNK_SIZE - 1) / CHUNK_SIZE));
+            chunk.put("__is_last_chunk", String.valueOf(endIndex >= keys.size()));
+            
+            return chunk;
+        } catch (Exception e) {
+            log.error("Exception in getCurrentStateChunk", e);
             throw new org.apache.thrift.TException(e);
         }
     }
