@@ -130,53 +130,9 @@ public class StorageNode {
                 }
             } else {
                 log.info("I am the backup");
-                byte[] primaryData = curClient.getData().forPath(mainArgs[3] + "/" + primaryChild);
-                String[] primaryHostPort = new String(primaryData).split(":");
-                try {
-                    TSocket sock = new TSocket(primaryHostPort[0], Integer.parseInt(primaryHostPort[1]));
-                    TTransport transport = new TFramedTransport(sock);
-                    transport.open();
-                    TProtocol protocol = new TBinaryProtocol(transport);
-                    KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
-                    
-                    // Use enhanced state synchronization with version tracking
-                    try {
-                        Map<String, String> stateWithVersions = primaryClient.getCurrentStateWithVersions();
-                        
-                        // Extract state and versions
-                        Map<String, String> state = new HashMap<>();
-                        Map<String, Long> versions = new HashMap<>();
-                        
-                        for (Map.Entry<String, String> entry : stateWithVersions.entrySet()) {
-                            String key = entry.getKey();
-                            String value = entry.getValue();
-                            
-                            if (key.startsWith("__version_")) {
-                                // This is a version entry
-                                String actualKey = key.substring(10); // Remove "__version_" prefix
-                                try {
-                                    versions.put(actualKey, Long.parseLong(value));
-                                } catch (NumberFormatException e) {
-                                    log.warn("Invalid version format for key: " + actualKey);
-                                }
-                            } else if (!key.equals("__state_version")) {
-                                // This is a regular state entry
-                                state.put(key, value);
-                            }
-                        }
-                        
-                        handler.syncStateWithVersions(state, versions);
-                    } catch (Exception e) {
-                        log.warn("Enhanced sync failed, falling back to basic sync", e);
-                        // Fallback to basic sync
-                        Map<String, String> state = primaryClient.getCurrentState();
-                        handler.syncState(state);
-                    }
-                    
-                    transport.close();
-                } catch (Exception e) {
-                    log.error("Failed to sync state from primary", e);
-                }
+                // ZERO STATE TRANSFER - don't try to get state from primary
+                // Just become backup and let replication handle data consistency
+                log.info("Becoming backup with zero state transfer - will use replication for consistency");
             }
         } catch (Exception e) {
             log.error("Error in updateRole", e);
