@@ -2,6 +2,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
+import java.nio.ByteBuffer;
 
 import org.apache.thrift.*;
 import org.apache.thrift.server.*;
@@ -249,17 +250,26 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
 
     // Enhanced state retrieval with version information
-    public Map<String, Object> getCurrentStateWithVersions() throws org.apache.thrift.TException {
+    @Override
+    public Map<String, String> getCurrentStateWithVersions() throws org.apache.thrift.TException {
         try {
             while (isStateSyncing) {
                 Thread.yield();
             }
             
             Map<String, String> currentMap = myMapRef.get();
-            Map<String, Object> result = new HashMap<>();
-            result.put("state", new HashMap<>(currentMap));
-            result.put("versions", new HashMap<>(keyVersions));
-            result.put("stateVersion", stateVersion);
+            Map<String, String> result = new HashMap<>();
+            
+            // Add state
+            result.putAll(currentMap);
+            
+            // Add version information as string
+            for (Map.Entry<String, Long> entry : keyVersions.entrySet()) {
+                result.put("__version_" + entry.getKey(), entry.getValue().toString());
+            }
+            
+            // Add state version
+            result.put("__state_version", String.valueOf(stateVersion));
             
             return result;
         } catch (Exception e) {

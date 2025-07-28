@@ -5,5 +5,5 @@ service KeyValueService {
   void syncState(1: map<string, string> state);
   void syncStateWithVersions(1: map<string, string> state, 2: map<string, i64> versions);
   map<string, string> getCurrentState();
-  map<string, binary> getCurrentStateWithVersions();
+  map<string, string> getCurrentStateWithVersions();
 }
