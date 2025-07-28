@@ -1,0 +1,60 @@
+2025-07-25 17:46:36,608 [myid:] - INFO  [main:QuorumPeerConfig@136] - Reading configuration from: /home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../conf/zoo.cfg
+2025-07-25 17:46:36,621 [myid:] - INFO  [main:DatadirCleanupManager@78] - autopurge.snapRetainCount set to 3
+2025-07-25 17:46:36,621 [myid:] - INFO  [main:DatadirCleanupManager@79] - autopurge.purgeInterval set to 0
+2025-07-25 17:46:36,621 [myid:] - INFO  [main:DatadirCleanupManager@101] - Purge task is not scheduled.
+2025-07-25 17:46:36,623 [myid:] - WARN  [main:QuorumPeerMain@116] - Either no config or no quorum defined in config, running  in standalone mode
+2025-07-25 17:46:36,644 [myid:] - INFO  [main:QuorumPeerConfig@136] - Reading configuration from: /home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../conf/zoo.cfg
+2025-07-25 17:46:36,645 [myid:] - INFO  [main:ZooKeeperServerMain@98] - Starting server
+2025-07-25 17:46:36,654 [myid:] - INFO  [main:Environment@100] - Server environment:zookeeper.version=3.4.13-2d71af4dbe22557fda74f9a9b4309b15a7487f03, built on 06/29/2018 04:05 GMT
+2025-07-25 17:46:36,655 [myid:] - INFO  [main:Environment@100] - Server environment:host.name=archlinux
+2025-07-25 17:46:36,655 [myid:] - INFO  [main:Environment@100] - Server environment:java.version=11.0.27
+2025-07-25 17:46:36,655 [myid:] - INFO  [main:Environment@100] - Server environment:java.vendor=Arch Linux
+2025-07-25 17:46:36,655 [myid:] - INFO  [main:Environment@100] - Server environment:java.home=/usr/lib/jvm/java-11-openjdk
+2025-07-25 17:46:36,655 [myid:] - INFO  [main:Environment@100] - Server environment:java.class.path=/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../build/classes:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../build/lib/*.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/slf4j-log4j12-1.7.25.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/slf4j-api-1.7.25.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/netty-3.10.6.Final.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/log4j-1.2.17.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/jline-0.9.94.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../lib/audience-annotations-0.5.0.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../zookeeper-3.4.13.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../src/java/lib/*.jar:/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_student/zookeeper-3.4.13/bin/../conf:
+2025-07-25 17:46:36,656 [myid:] - INFO  [main:Environment@100] - Server environment:java.library.path=/tmp/.mount_cursorxSsUgH/usr/lib/:/tmp/.mount_cursorxSsUgH/usr/lib32/:/tmp/.mount_cursorxSsUgH/usr/lib64/:/tmp/.mount_cursorxSsUgH/lib/:/tmp/.mount_cursorxSsUgH/lib/i386-linux-gnu/:/tmp/.mount_cursorxSsUgH/lib/x86_64-linux-gnu/:/tmp/.mount_cursorxSsUgH/lib/aarch64-linux-gnu/:/tmp/.mount_cursorxSsUgH/lib32/:/tmp/.mount_cursorxSsUgH/lib64/::/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
+2025-07-25 17:46:36,656 [myid:] - INFO  [main:Environment@100] - Server environment:java.io.tmpdir=/tmp
+2025-07-25 17:46:36,656 [myid:] - INFO  [main:Environment@100] - Server environment:java.compiler=<NA>
+2025-07-25 17:46:36,657 [myid:] - INFO  [main:Environment@100] - Server environment:os.name=Linux
+2025-07-25 17:46:36,658 [myid:] - INFO  [main:Environment@100] - Server environment:os.arch=amd64
+2025-07-25 17:46:36,658 [myid:] - INFO  [main:Environment@100] - Server environment:os.version=6.14.5-arch1-1
+2025-07-25 17:46:36,658 [myid:] - INFO  [main:Environment@100] - Server environment:user.name=hobbes
+2025-07-25 17:46:36,658 [myid:] - INFO  [main:Environment@100] - Server environment:user.home=/home/hobbes
+2025-07-25 17:46:36,658 [myid:] - INFO  [main:Environment@100] - Server environment:user.dir=/home/hobbes/Documents/ECE-454/assignment_4/zookeeper_starter
+2025-07-25 17:46:36,665 [myid:] - INFO  [main:ZooKeeperServer@836] - tickTime set to 2000
+2025-07-25 17:46:36,666 [myid:] - INFO  [main:ZooKeeperServer@845] - minSessionTimeout set to -1
+2025-07-25 17:46:36,666 [myid:] - INFO  [main:ZooKeeperServer@854] - maxSessionTimeout set to -1
+2025-07-25 17:46:36,673 [myid:] - INFO  [main:ServerCnxnFactory@117] - Using org.apache.zookeeper.server.NIOServerCnxnFactory as server connection factory
+2025-07-25 17:46:36,678 [myid:] - INFO  [main:NIOServerCnxnFactory@89] - binding to port 0.0.0.0/0.0.0.0:2181
+2025-07-25 17:46:41,876 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:34498
+2025-07-25 17:46:41,886 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:34498
+2025-07-25 17:46:41,888 [myid:] - INFO  [SyncThread:0:FileTxnLog@213] - Creating new log file: log.1
+2025-07-25 17:46:41,900 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0000 with negotiated timeout 30000 for client /127.0.0.1:34498
+2025-07-25 17:46:42,241 [myid:] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@376] - Unable to read additional data from client sessionid 0x1000856948f0000, likely client has closed socket
+2025-07-25 17:46:42,242 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1056] - Closed socket connection for client /127.0.0.1:34498 which had sessionid 0x1000856948f0000
+2025-07-25 17:47:12,836 [myid:] - INFO  [SessionTracker:ZooKeeperServer@355] - Expiring session 0x1000856948f0000, timeout of 30000ms exceeded
+2025-07-25 17:47:12,837 [myid:] - INFO  [ProcessThread(sid:0 cport:2181)::PrepRequestProcessor@487] - Processed session termination for sessionid: 0x1000856948f0000
+2025-07-25 17:50:07,891 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:57470
+2025-07-25 17:50:07,903 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:57470
+2025-07-25 17:50:07,906 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0001 with negotiated timeout 10000 for client /127.0.0.1:57470
+2025-07-25 17:51:24,979 [myid:] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@376] - Unable to read additional data from client sessionid 0x1000856948f0001, likely client has closed socket
+2025-07-25 17:51:24,980 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1056] - Closed socket connection for client /127.0.0.1:57470 which had sessionid 0x1000856948f0001
+2025-07-25 17:51:34,837 [myid:] - INFO  [SessionTracker:ZooKeeperServer@355] - Expiring session 0x1000856948f0001, timeout of 10000ms exceeded
+2025-07-25 17:51:34,837 [myid:] - INFO  [ProcessThread(sid:0 cport:2181)::PrepRequestProcessor@487] - Processed session termination for sessionid: 0x1000856948f0001
+2025-07-25 17:51:57,214 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:35808
+2025-07-25 17:51:57,226 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:35808
+2025-07-25 17:51:57,227 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0002 with negotiated timeout 10000 for client /127.0.0.1:35808
+2025-07-25 17:53:41,003 [myid:] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@376] - Unable to read additional data from client sessionid 0x1000856948f0002, likely client has closed socket
+2025-07-25 17:53:41,005 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1056] - Closed socket connection for client /127.0.0.1:35808 which had sessionid 0x1000856948f0002
+2025-07-25 17:53:50,837 [myid:] - INFO  [SessionTracker:ZooKeeperServer@355] - Expiring session 0x1000856948f0002, timeout of 10000ms exceeded
+2025-07-25 17:53:50,837 [myid:] - INFO  [ProcessThread(sid:0 cport:2181)::PrepRequestProcessor@487] - Processed session termination for sessionid: 0x1000856948f0002
+2025-07-25 17:54:12,343 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:55336
+2025-07-25 17:54:12,357 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:55336
+2025-07-25 17:54:12,359 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0003 with negotiated timeout 10000 for client /127.0.0.1:55336
+2025-07-25 17:54:15,504 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:55350
+2025-07-25 17:54:15,522 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:55350
+2025-07-25 17:54:15,523 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0004 with negotiated timeout 10000 for client /127.0.0.1:55350
+2025-07-25 17:54:24,114 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:48216
+2025-07-25 17:54:24,122 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@949] - Client attempting to establish new session at /127.0.0.1:48216
+2025-07-25 17:54:24,125 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@694] - Established session 0x1000856948f0005 with negotiated timeout 10000 for client /127.0.0.1:48216
+2025-07-25 17:54:34,232 [myid:] - INFO  [ProcessThread(sid:0 cport:2181)::PrepRequestProcessor@487] - Processed session termination for sessionid: 0x1000856948f0005
+2025-07-25 17:54:34,234 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1056] - Closed socket connection for client /127.0.0.1:48216 which had sessionid 0x1000856948f0005
