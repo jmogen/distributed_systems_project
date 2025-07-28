@@ -48,10 +48,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isAvailable = new AtomicBoolean(true);
 
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
-        this.host = host;
-        this.port = port;
-        this.curClient = curClient;
-        this.zkNode = zkNode;
+	this.host = host;
+	this.port = port;
+	this.curClient = curClient;
+	this.zkNode = zkNode;
         myMapRef = new AtomicReference<>(new ConcurrentHashMap<String, String>());
     }
 
