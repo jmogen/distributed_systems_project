@@ -2,7 +2,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
-import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.thrift.*;
 import org.apache.thrift.server.*;
@@ -31,7 +31,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     // Dedicated thread pool for replication with more threads
     private static final ExecutorService replicationExecutor = 
-        Executors.newFixedThreadPool(32);
+        Executors.newFixedThreadPool(64);
     
     // Connection pool for replication to avoid creating new connections
     private final Map<String, KeyValueService.Client> backupClients = 
@@ -42,6 +42,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final Map<String, Long> keyVersions = new ConcurrentHashMap<>();
     private final AtomicLong globalVersion = new AtomicLong(0);
     private volatile long stateVersion = 0;
+    
+    // Lock-free role management
+    private final AtomicBoolean isRoleChanging = new AtomicBoolean(false);
+    private final AtomicBoolean isAvailable = new AtomicBoolean(true);
 
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
         this.host = host;
@@ -53,6 +57,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public String get(String key) throws org.apache.thrift.TException {
         try {
+            // Always available - no blocking during role changes
             Map<String, String> currentMap = myMapRef.get();
             String ret = currentMap.get(key);
             return ret == null ? "" : ret;
@@ -162,17 +167,17 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public void syncState(Map<String, String> state) throws org.apache.thrift.TException {
         try {
-            // For large states, skip transfer entirely - let replication handle it
-            if (state.size() > 100) {
-                log.info("Large state detected (" + state.size() + " keys), skipping transfer - will use replication");
-                return;
-            }
-            
-            // For small states, do immediate sync
-            Map<String, String> newMap = new ConcurrentHashMap<>(state);
-            myMapRef.set(newMap);
-            stateVersion = System.currentTimeMillis();
-            log.info("syncState: immediate sync, state size=" + state.size());
+            // Non-blocking state sync
+            replicationExecutor.submit(() -> {
+                try {
+                    Map<String, String> newMap = new ConcurrentHashMap<>(state);
+                    myMapRef.set(newMap);
+                    stateVersion = System.currentTimeMillis();
+                    log.info("syncState: completed, state size=" + state.size());
+                } catch (Exception e) {
+                    log.error("Error in background state sync", e);
+                }
+            });
         } catch (Exception e) {
             log.error("Exception in syncState", e);
             throw new org.apache.thrift.TException(e);
@@ -182,31 +187,32 @@ public class KeyValueHandler implements KeyValueService.Iface {
     // Enhanced state synchronization with version tracking
     public void syncStateWithVersions(Map<String, String> state, Map<String, Long> versions) throws org.apache.thrift.TException {
         try {
-            // For large states, skip transfer entirely - let replication handle it
-            if (state.size() > 100) {
-                log.info("Large state detected (" + state.size() + " keys), skipping transfer - will use replication");
-                return;
-            }
-            
-            Map<String, String> newMap = new ConcurrentHashMap<>();
-            
-            // Only update if version is newer
-            for (Map.Entry<String, String> entry : state.entrySet()) {
-                String key = entry.getKey();
-                Long remoteVersion = versions.get(key);
-                Long localVersion = keyVersions.get(key);
-                
-                if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
-                    newMap.put(key, entry.getValue());
-                    keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
+            // Non-blocking state sync with versions
+            replicationExecutor.submit(() -> {
+                try {
+                    Map<String, String> newMap = new ConcurrentHashMap<>();
+                    
+                    // Only update if version is newer
+                    for (Map.Entry<String, String> entry : state.entrySet()) {
+                        String key = entry.getKey();
+                        Long remoteVersion = versions.get(key);
+                        Long localVersion = keyVersions.get(key);
+                        
+                        if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
+                            newMap.put(key, entry.getValue());
+                            keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
+                        }
+                    }
+                    
+                    // Atomic swap
+                    myMapRef.set(newMap);
+                    stateVersion = System.currentTimeMillis();
+                    
+                    log.info("syncStateWithVersions: completed, state size=" + newMap.size());
+                } catch (Exception e) {
+                    log.error("Error in background state sync with versions", e);
                 }
-            }
-            
-            // Atomic swap
-            myMapRef.set(newMap);
-            stateVersion = System.currentTimeMillis();
-            
-            log.info("syncStateWithVersions: immediate sync, state size=" + newMap.size());
+            });
         } catch (Exception e) {
             log.error("Exception in syncStateWithVersions", e);
             throw new org.apache.thrift.TException(e);

@@ -50,8 +50,8 @@ public class StorageNode {
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxWorkerThreads(256); // Increased to 256 for better concurrency
-        sargs.minWorkerThreads(64);  // Set minimum threads
+        sargs.maxWorkerThreads(512); // Increased to 512 for maximum concurrency
+        sargs.minWorkerThreads(128);  // Set higher minimum threads
         TServer server = new TThreadPoolServer(sargs);
         log.info("Launching server");
 
@@ -130,9 +130,40 @@ public class StorageNode {
                 }
             } else {
                 log.info("I am the backup");
-                // ZERO STATE TRANSFER - don't try to get state from primary
-                // Just become backup and let replication handle data consistency
-                log.info("Becoming backup with zero state transfer - will use replication for consistency");
+                byte[] primaryData = curClient.getData().forPath(mainArgs[3] + "/" + primaryChild);
+                String[] primaryHostPort = new String(primaryData).split(":");
+                
+                // IMMEDIATE AVAILABILITY - don't block for state transfer
+                // Start serving requests immediately, let state sync happen in background
+                log.info("Becoming backup - immediately available for requests");
+                
+                // Background state sync with timeout
+                new Thread(() -> {
+                    try {
+                        TSocket sock = new TSocket(primaryHostPort[0], Integer.parseInt(primaryHostPort[1]));
+                        sock.setTimeout(5000); // 5 second timeout
+                        TTransport transport = new TFramedTransport(sock);
+                        transport.open();
+                        TProtocol protocol = new TBinaryProtocol(transport);
+                        KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
+                        
+                        try {
+                            Map<String, String> state = primaryClient.getCurrentState();
+                            if (state.size() <= 500) { // Only transfer small states
+                                handler.syncState(state);
+                                log.info("Background state sync completed: " + state.size() + " keys");
+                            } else {
+                                log.info("Large state detected (" + state.size() + " keys), skipping background sync");
+                            }
+                        } catch (Exception e) {
+                            log.warn("Background state sync failed, continuing without transfer", e);
+                        }
+                        
+                        transport.close();
+                    } catch (Exception e) {
+                        log.error("Background state sync failed", e);
+                    }
+                }).start();
             }
         } catch (Exception e) {
             log.error("Error in updateRole", e);
