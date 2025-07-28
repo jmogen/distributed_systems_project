@@ -24,6 +24,7 @@ public class StorageNode {
     static String myZnode;
     static String[] mainArgs;
     static TServer server;
+    static volatile boolean isShuttingDown = false;
 
     public static void main(String [] args) throws Exception {
         BasicConfigurator.configure();
@@ -52,9 +53,8 @@ public class StorageNode {
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxWorkerThreads(512); // Maximum concurrency
-        sargs.minWorkerThreads(128);  // High minimum threads
-        server = new TThreadPoolServer(sargs);
+        sargs.maxWorkerThreads(64);
+        TServer server = new TThreadPoolServer(sargs);
         log.info("Launching server");
 
         Thread thriftThread = new Thread(() -> {
@@ -70,9 +70,10 @@ public class StorageNode {
             .forPath(znodePath, myData.getBytes());
         log.info("Created znode: " + myZnode);
 
-        // Add shutdown hook for clean shutdown
+        // Add shutdown hook for clean shutdown - BUT DON'T CLOSE CURATOR CLIENT
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down StorageNode...");
+            isShuttingDown = true;
             try {
                 if (server != null && server.isServing()) {
                     server.stop();
@@ -81,21 +82,7 @@ public class StorageNode {
             } catch (Exception e) {
                 log.error("Error stopping Thrift server", e);
             }
-            try {
-                if (handler != null) {
-                    handler.shutdown(); // Cleanup replication executor
-                }
-            } catch (Exception e) {
-                log.error("Error shutting down handler", e);
-            }
-            try {
-                if (curClient != null) {
-                    curClient.close();
-                    log.info("ZooKeeper client closed.");
-                }
-            } catch (Exception e) {
-                log.error("Error closing ZooKeeper client", e);
-            }
+            // DO NOT close curClient here - let it be closed by the JVM
         }));
 
         // Initial role detection and watcher setup
@@ -108,31 +95,24 @@ public class StorageNode {
 
     static class RoleWatcher implements CuratorWatcher {
         public void process(WatchedEvent event) throws Exception {
-            // NON-BLOCKING ROLE UPDATE - don't block the main thread
-            CompletableFuture.runAsync(() -> {
-                try {
-                    updateRole();
-                } catch (Exception e) {
-                    log.error("Error in async role update", e);
-                }
-            });
+            if (isShuttingDown) return; // Don't process events during shutdown
+            updateRole();
         }
     }
 
-    // Add to StorageNode.java - ensure immediate availability
     static void updateRole() {
         try {
+            if (isShuttingDown) return; // Don't update role during shutdown
+            
             List<String> children = curClient.getChildren().usingWatcher(new RoleWatcher()).forPath(mainArgs[3]);
             Collections.sort(children);
             String primaryChild = children.get(0);
-            String myChild = myZnode.substring(mainArgs[3].length() + 1);
+            String myChild = myZnode.substring(mainArgs[3].length() + 1); // extract child name
             boolean isPrimary = myChild.equals(primaryChild);
-            
-            // IMMEDIATE ROLE UPDATE - no blocking
             handler.setPrimary(isPrimary);
             
             if (isPrimary) {
-                log.info("I am the primary - immediately available");
+                log.info("I am the primary");
                 if (children.size() > 1) {
                     String backupChild = children.get(1);
                     byte[] backupData = curClient.getData().forPath(mainArgs[3] + "/" + backupChild);
@@ -142,12 +122,14 @@ public class StorageNode {
                     handler.setBackupAddress(null, -1);
                 }
             } else {
-                log.info("I am the backup - immediately available");
-                // NO STATE TRANSFER - let replication handle consistency
-                log.info("Skipping state transfer - will use replication for consistency");
+                log.info("I am the backup");
+                // NO STATE TRANSFER - rely entirely on replication
+                // This eliminates the blocking state transfer that causes linearizability violations
             }
         } catch (Exception e) {
-            log.error("Error in updateRole", e);
+            if (!isShuttingDown) { // Only log if not shutting down
+                log.error("Error in updateRole", e);
+            }
         }
     }
 }
