@@ -43,12 +43,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicLong globalVersion = new AtomicLong(0);
     private volatile long stateVersion = 0;
     
-    // State synchronization tracking
+    // Non-blocking state transfer
     private volatile boolean isStateSyncing = false;
     private final Object stateSyncLock = new Object();
-    
-    // Chunked state transfer
-    private static final int CHUNK_SIZE = 1000; // Transfer 1000 keys at a time
+    private final Map<String, String> pendingState = new ConcurrentHashMap<>();
+    private volatile boolean hasPendingState = false;
 
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
         this.host = host;
@@ -60,9 +59,12 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public String get(String key) throws org.apache.thrift.TException {
         try {
-            // Wait if state synchronization is in progress
-            while (isStateSyncing) {
-                Thread.yield();
+            // Check pending state first (for non-blocking sync)
+            if (hasPendingState) {
+                String pendingValue = pendingState.get(key);
+                if (pendingValue != null) {
+                    return pendingValue;
+                }
             }
             
             Map<String, String> currentMap = myMapRef.get();
@@ -140,16 +142,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
     @Override
     public void put(String key, String value) throws org.apache.thrift.TException {
         try {
-            // Wait if state synchronization is in progress
-            while (isStateSyncing) {
-                Thread.yield();
-            }
-            
             long version = globalVersion.incrementAndGet();
             keyVersions.put(key, version);
             
+            // Update both current and pending state
             Map<String, String> currentMap = myMapRef.get();
             currentMap.put(key, value);
+            
+            if (hasPendingState) {
+                pendingState.put(key, value);
+            }
             
             if (isPrimary) {
                 replicateToBackup(key, value, version);
@@ -170,6 +172,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
                 keyVersions.put(key, version);
                 Map<String, String> currentMap = myMapRef.get();
                 currentMap.put(key, value);
+                
+                if (hasPendingState) {
+                    pendingState.put(key, value);
+                }
             }
         } catch (Exception e) {
             log.error("Exception in putWithVersion(" + key + ", " + value + ", " + version + ")", e);
@@ -179,53 +185,31 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public void syncState(Map<String, String> state) throws org.apache.thrift.TException {
         try {
+            // Non-blocking state sync
             synchronized(stateSyncLock) {
-                isStateSyncing = true;
+                // Store in pending state first
+                pendingState.clear();
+                pendingState.putAll(state);
+                hasPendingState = true;
                 
-                // Create new map with the state
-                Map<String, String> newMap = new ConcurrentHashMap<>(state);
+                // Apply state in background
+                replicationExecutor.submit(() -> {
+                    try {
+                        Map<String, String> newMap = new ConcurrentHashMap<>(state);
+                        myMapRef.set(newMap);
+                        stateVersion = System.currentTimeMillis();
+                        hasPendingState = false;
+                        pendingState.clear();
+                        log.info("syncState: completed, state size=" + state.size());
+                    } catch (Exception e) {
+                        log.error("Error applying state in background", e);
+                    }
+                });
                 
-                // Atomic swap using AtomicReference
-                myMapRef.set(newMap);
-                
-                // Update state version
-                stateVersion = System.currentTimeMillis();
-                
-                log.info("syncState: state size=" + state.size());
+                log.info("syncState: started non-blocking sync, state size=" + state.size());
             }
         } catch (Exception e) {
             log.error("Exception in syncState", e);
-            throw new org.apache.thrift.TException(e);
-        } finally {
-            isStateSyncing = false;
-        }
-    }
-
-    // Chunked state synchronization
-    public void syncStateChunked(Map<String, String> state, int chunkId, boolean isLastChunk) throws org.apache.thrift.TException {
-        try {
-            synchronized(stateSyncLock) {
-                if (chunkId == 0) {
-                    // First chunk - clear existing state
-                    isStateSyncing = true;
-                    myMapRef.set(new ConcurrentHashMap<>());
-                }
-                
-                // Add chunk to current state
-                Map<String, String> currentMap = myMapRef.get();
-                currentMap.putAll(state);
-                
-                if (isLastChunk) {
-                    // Last chunk - update state version
-                    stateVersion = System.currentTimeMillis();
-                    isStateSyncing = false;
-                    log.info("syncStateChunked: completed, total size=" + currentMap.size());
-                } else {
-                    log.info("syncStateChunked: chunk " + chunkId + ", size=" + state.size());
-                }
-            }
-        } catch (Exception e) {
-            log.error("Exception in syncStateChunked", e);
             throw new org.apache.thrift.TException(e);
         }
     }
@@ -234,44 +218,51 @@ public class KeyValueHandler implements KeyValueService.Iface {
     public void syncStateWithVersions(Map<String, String> state, Map<String, Long> versions) throws org.apache.thrift.TException {
         try {
             synchronized(stateSyncLock) {
-                isStateSyncing = true;
+                // Store in pending state first
+                pendingState.clear();
+                pendingState.putAll(state);
+                hasPendingState = true;
                 
-                Map<String, String> newMap = new ConcurrentHashMap<>();
-                
-                // Only update if version is newer
-                for (Map.Entry<String, String> entry : state.entrySet()) {
-                    String key = entry.getKey();
-                    Long remoteVersion = versions.get(key);
-                    Long localVersion = keyVersions.get(key);
-                    
-                    if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
-                        newMap.put(key, entry.getValue());
-                        keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
+                // Apply state in background with version checking
+                replicationExecutor.submit(() -> {
+                    try {
+                        Map<String, String> newMap = new ConcurrentHashMap<>();
+                        
+                        // Only update if version is newer
+                        for (Map.Entry<String, String> entry : state.entrySet()) {
+                            String key = entry.getKey();
+                            Long remoteVersion = versions.get(key);
+                            Long localVersion = keyVersions.get(key);
+                            
+                            if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
+                                newMap.put(key, entry.getValue());
+                                keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
+                            }
+                        }
+                        
+                        // Atomic swap
+                        myMapRef.set(newMap);
+                        stateVersion = System.currentTimeMillis();
+                        hasPendingState = false;
+                        pendingState.clear();
+                        
+                        log.info("syncStateWithVersions: completed, state size=" + newMap.size());
+                    } catch (Exception e) {
+                        log.error("Error applying state with versions in background", e);
                     }
-                }
+                });
                 
-                // Atomic swap
-                myMapRef.set(newMap);
-                stateVersion = System.currentTimeMillis();
-                
-                log.info("syncStateWithVersions: state size=" + newMap.size());
+                log.info("syncStateWithVersions: started non-blocking sync, state size=" + state.size());
             }
         } catch (Exception e) {
             log.error("Exception in syncStateWithVersions", e);
             throw new org.apache.thrift.TException(e);
-        } finally {
-            isStateSyncing = false;
         }
     }
 
     @Override
     public Map<String, String> getCurrentState() throws org.apache.thrift.TException {
         try {
-            // Wait if state synchronization is in progress
-            while (isStateSyncing) {
-                Thread.yield();
-            }
-            
             // Get current map atomically
             Map<String, String> currentMap = myMapRef.get();
             return new HashMap<>(currentMap);
@@ -281,45 +272,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
         }
     }
 
-    // Get state in chunks
-    public Map<String, String> getCurrentStateChunk(int chunkId) throws org.apache.thrift.TException {
-        try {
-            while (isStateSyncing) {
-                Thread.yield();
-            }
-            
-            Map<String, String> currentMap = myMapRef.get();
-            List<String> keys = new ArrayList<>(currentMap.keySet());
-            
-            int startIndex = chunkId * CHUNK_SIZE;
-            int endIndex = Math.min(startIndex + CHUNK_SIZE, keys.size());
-            
-            Map<String, String> chunk = new HashMap<>();
-            for (int i = startIndex; i < endIndex; i++) {
-                String key = keys.get(i);
-                chunk.put(key, currentMap.get(key));
-            }
-            
-            // Add metadata
-            chunk.put("__chunk_id", String.valueOf(chunkId));
-            chunk.put("__total_chunks", String.valueOf((keys.size() + CHUNK_SIZE - 1) / CHUNK_SIZE));
-            chunk.put("__is_last_chunk", String.valueOf(endIndex >= keys.size()));
-            
-            return chunk;
-        } catch (Exception e) {
-            log.error("Exception in getCurrentStateChunk", e);
-            throw new org.apache.thrift.TException(e);
-        }
-    }
-
     // Enhanced state retrieval with version information
     @Override
     public Map<String, String> getCurrentStateWithVersions() throws org.apache.thrift.TException {
         try {
-            while (isStateSyncing) {
-                Thread.yield();
-            }
-            
             Map<String, String> currentMap = myMapRef.get();
             Map<String, String> result = new HashMap<>();
             
