@@ -1,5 +1,6 @@
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 import org.apache.thrift.*;
 import org.apache.thrift.server.*;
@@ -22,6 +23,7 @@ public class StorageNode {
     static KeyValueHandler handler;
     static String myZnode;
     static String[] mainArgs;
+    static TServer server;
 
     public static void main(String [] args) throws Exception {
         BasicConfigurator.configure();
@@ -50,9 +52,9 @@ public class StorageNode {
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxWorkerThreads(512); // Increased to 512 for maximum concurrency
-        sargs.minWorkerThreads(128);  // Set higher minimum threads
-        TServer server = new TThreadPoolServer(sargs);
+        sargs.maxWorkerThreads(512); // Maximum concurrency
+        sargs.minWorkerThreads(128);  // High minimum threads
+        server = new TThreadPoolServer(sargs);
         log.info("Launching server");
 
         Thread thriftThread = new Thread(() -> {
@@ -106,7 +108,14 @@ public class StorageNode {
 
     static class RoleWatcher implements CuratorWatcher {
         public void process(WatchedEvent event) throws Exception {
-            updateRole();
+            // NON-BLOCKING ROLE UPDATE - don't block the main thread
+            CompletableFuture.runAsync(() -> {
+                try {
+                    updateRole();
+                } catch (Exception e) {
+                    log.error("Error in async role update", e);
+                }
+            });
         }
     }
 
@@ -117,7 +126,10 @@ public class StorageNode {
             String primaryChild = children.get(0);
             String myChild = myZnode.substring(mainArgs[3].length() + 1); // extract child name
             boolean isPrimary = myChild.equals(primaryChild);
+            
+            // IMMEDIATE ROLE UPDATE - don't block
             handler.setPrimary(isPrimary);
+            
             if (isPrimary) {
                 log.info("I am the primary");
                 if (children.size() > 1) {
@@ -133,15 +145,11 @@ public class StorageNode {
                 byte[] primaryData = curClient.getData().forPath(mainArgs[3] + "/" + primaryChild);
                 String[] primaryHostPort = new String(primaryData).split(":");
                 
-                // IMMEDIATE AVAILABILITY - don't block for state transfer
-                // Start serving requests immediately, let state sync happen in background
-                log.info("Becoming backup - immediately available for requests");
-                
-                // Background state sync with timeout
-                new Thread(() -> {
+                // BACKGROUND STATE SYNC - don't block role change
+                CompletableFuture.runAsync(() -> {
                     try {
                         TSocket sock = new TSocket(primaryHostPort[0], Integer.parseInt(primaryHostPort[1]));
-                        sock.setTimeout(5000); // 5 second timeout
+                        sock.setTimeout(3000); // 3 second timeout
                         TTransport transport = new TFramedTransport(sock);
                         transport.open();
                         TProtocol protocol = new TBinaryProtocol(transport);
@@ -149,11 +157,11 @@ public class StorageNode {
                         
                         try {
                             Map<String, String> state = primaryClient.getCurrentState();
-                            if (state.size() <= 500) { // Only transfer small states
+                            if (state.size() <= 100) { // Only transfer very small states
                                 handler.syncState(state);
                                 log.info("Background state sync completed: " + state.size() + " keys");
                             } else {
-                                log.info("Large state detected (" + state.size() + " keys), skipping background sync");
+                                log.info("Large state detected (" + state.size() + " keys), skipping sync");
                             }
                         } catch (Exception e) {
                             log.warn("Background state sync failed, continuing without transfer", e);
@@ -163,7 +171,7 @@ public class StorageNode {
                     } catch (Exception e) {
                         log.error("Background state sync failed", e);
                     }
-                }).start();
+                });
             }
         } catch (Exception e) {
             log.error("Error in updateRole", e);
