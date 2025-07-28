@@ -1,6 +1,5 @@
 import java.io.*;
 import java.util.*;
-import java.net.ServerSocket;
 
 import org.apache.thrift.*;
 import org.apache.thrift.server.*;
@@ -36,12 +35,6 @@ public class StorageNode {
         }
 
         int port = Integer.parseInt(args[1]);
-        
-        // Check if port is available
-        if (!isPortAvailable(port)) {
-            log.error("Port " + port + " is not available!");
-            System.exit(1);
-        }
 
         // Start Curator client
         curClient =
@@ -60,11 +53,11 @@ public class StorageNode {
         // Create processor
         KeyValueService.Processor<KeyValueService.Iface> processor = new KeyValueService.Processor<>(handler);
         
-        // Create server socket
-        TServerSocket socket = new TServerSocket(port);
+        // Create non-blocking server transport
+        TNonblockingServerTransport transport = new TNonblockingServerSocket(port);
         
         // Use non-blocking server
-        TNonblockingServer.Args sargs = new TNonblockingServer.Args(socket);
+        TNonblockingServer.Args sargs = new TNonblockingServer.Args(transport);
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
@@ -126,15 +119,6 @@ public class StorageNode {
         }
         
         log.info("StorageNode main thread exiting.");
-    }
-
-    // Helper method to check if port is available
-    private static boolean isPortAvailable(int port) {
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     static class RoleWatcher implements CuratorWatcher {
