@@ -1,5 +1,6 @@
 import java.io.*;
 import java.util.*;
+import java.net.ServerSocket;
 
 import org.apache.thrift.*;
 import org.apache.thrift.server.*;
@@ -34,6 +35,14 @@ public class StorageNode {
             System.exit(-1);
         }
 
+        int port = Integer.parseInt(args[1]);
+        
+        // Check if port is available
+        if (!isPortAvailable(port)) {
+            log.error("Port " + port + " is not available!");
+            System.exit(1);
+        }
+
         // Start Curator client
         curClient =
             CuratorFrameworkFactory.builder()
@@ -46,30 +55,26 @@ public class StorageNode {
         curClient.start();
 
         // Create handler
-        handler = new KeyValueHandler(args[0], Integer.parseInt(args[1]), curClient, args[3]);
+        handler = new KeyValueHandler(args[0], port, curClient, args[3]);
         
         // Create processor
         KeyValueService.Processor<KeyValueService.Iface> processor = new KeyValueService.Processor<>(handler);
         
-        // Create server socket
-        TServerSocket socket = new TServerSocket(Integer.parseInt(args[1]));
+        // Create server socket with explicit binding
+        TServerSocket socket = new TServerSocket(port);
         
-        // Configure server with optimized settings
-        TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
+        // Use simple server for reliability
+        TSimpleServer.Args sargs = new TSimpleServer.Args(socket);
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxWorkerThreads(128); // Increased thread pool
-        sargs.minWorkerThreads(16);  // Minimum threads
-        sargs.requestTimeout(30000);  // 30 second timeout
-        sargs.beBackoffSlotLength(1000); // 1 second backoff
         
         // Create server
-        server = new TThreadPoolServer(sargs);
+        server = new TSimpleServer(sargs);
         
-        log.info("Launching server on port " + args[1]);
+        log.info("Launching server on port " + port);
 
-        // Start server in separate thread
+        // Start server in separate thread (NOT daemon)
         Thread thriftThread = new Thread(() -> {
             try {
                 server.serve();
@@ -78,23 +83,16 @@ public class StorageNode {
                 log.error("Thrift server error", e);
             }
         });
-        thriftThread.setDaemon(true); // Make it a daemon thread
         thriftThread.start();
 
-        // Wait a moment for server to start
-        Thread.sleep(1000);
+        // Wait longer for server to start
+        Thread.sleep(3000);
         
-        // Verify server is running
-        if (!server.isServing()) {
-            log.error("Server failed to start!");
-            System.exit(1);
-        }
-        
-        log.info("Server is now serving on port " + args[1]);
+        log.info("Server should be serving on port " + port);
 
         // Create ZooKeeper znode
         String znodePath = args[3] + "/node-";
-        String myData = args[0] + ":" + args[1];
+        String myData = args[0] + ":" + port;
         myZnode = curClient.create()
             .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
             .forPath(znodePath, myData.getBytes());
@@ -105,7 +103,7 @@ public class StorageNode {
             log.info("Shutting down StorageNode...");
             isShuttingDown = true;
             try {
-                if (server != null && server.isServing()) {
+                if (server != null) {
                     server.stop();
                     log.info("Thrift server stopped.");
                 }
@@ -127,6 +125,15 @@ public class StorageNode {
         }
         
         log.info("StorageNode main thread exiting.");
+    }
+
+    // Helper method to check if port is available
+    private static boolean isPortAvailable(int port) {
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     static class RoleWatcher implements CuratorWatcher {
@@ -160,39 +167,7 @@ public class StorageNode {
                 }
             } else {
                 log.info("I am the backup");
-                // Minimal state transfer - just get a few keys to verify connection
-                try {
-                    byte[] primaryData = curClient.getData().forPath(mainArgs[3] + "/" + primaryChild);
-                    String[] primaryHostPort = new String(primaryData).split(":");
-                    
-                    // Quick connection test
-                    TSocket sock = new TSocket(primaryHostPort[0], Integer.parseInt(primaryHostPort[1]));
-                    sock.setTimeout(5000); // 5 second timeout
-                    TTransport transport = new TFramedTransport(sock);
-                    transport.open();
-                    TProtocol protocol = new TBinaryProtocol(transport);
-                    KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
-                    
-                    // Just get a small sample of state (first 10 keys)
-                    Map<String, String> sampleState = primaryClient.getCurrentState();
-                    if (sampleState.size() > 10) {
-                        // Take only first 10 keys to avoid blocking
-                        Map<String, String> smallSample = new HashMap<>();
-                        int count = 0;
-                        for (Map.Entry<String, String> entry : sampleState.entrySet()) {
-                            if (count++ >= 10) break;
-                            smallSample.put(entry.getKey(), entry.getValue());
-                        }
-                        handler.syncState(smallSample);
-                    } else {
-                        handler.syncState(sampleState);
-                    }
-                    
-                    transport.close();
-                } catch (Exception e) {
-                    log.error("Failed to sync state from primary", e);
-                    // Continue without state - rely on replication
-                }
+                // No state transfer - rely entirely on replication
             }
         } catch (Exception e) {
             if (!isShuttingDown) {
