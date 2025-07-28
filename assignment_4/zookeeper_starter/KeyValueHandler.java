@@ -43,11 +43,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicLong globalVersion = new AtomicLong(0);
     private volatile long stateVersion = 0;
     
-    // Non-blocking state transfer
+    // Lazy state synchronization
     private volatile boolean isStateSyncing = false;
     private final Object stateSyncLock = new Object();
-    private final Map<String, String> pendingState = new ConcurrentHashMap<>();
-    private volatile boolean hasPendingState = false;
+    private final Set<String> pendingKeys = ConcurrentHashMap.newKeySet();
+    private volatile boolean isBackup = false;
 
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
         this.host = host;
@@ -59,16 +59,14 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public String get(String key) throws org.apache.thrift.TException {
         try {
-            // Check pending state first (for non-blocking sync)
-            if (hasPendingState) {
-                String pendingValue = pendingState.get(key);
-                if (pendingValue != null) {
-                    return pendingValue;
-                }
-            }
-            
             Map<String, String> currentMap = myMapRef.get();
             String ret = currentMap.get(key);
+            
+            // If we're a backup and don't have this key, request it from primary
+            if (ret == null && isBackup && !pendingKeys.contains(key)) {
+                requestKeyFromPrimary(key);
+            }
+            
             return ret == null ? "" : ret;
         } catch (Exception e) {
             log.error("Exception in get(" + key + ")", e);
@@ -76,8 +74,31 @@ public class KeyValueHandler implements KeyValueService.Iface {
         }
     }
 
+    private void requestKeyFromPrimary(String key) {
+        if (backupHost == null || backupPort == -1) return;
+        
+        replicationExecutor.submit(() -> {
+            try {
+                pendingKeys.add(key);
+                KeyValueService.Client primaryClient = getBackupClient();
+                if (primaryClient != null) {
+                    String value = primaryClient.get(key);
+                    if (value != null && !value.isEmpty()) {
+                        Map<String, String> currentMap = myMapRef.get();
+                        currentMap.put(key, value);
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Failed to request key from primary: " + key, e);
+            } finally {
+                pendingKeys.remove(key);
+            }
+        });
+    }
+
     public void setPrimary(boolean isPrimary) {
         this.isPrimary = isPrimary;
+        this.isBackup = !isPrimary;
         log.info("setPrimary(" + isPrimary + ")");
     }
 
@@ -145,13 +166,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
             long version = globalVersion.incrementAndGet();
             keyVersions.put(key, version);
             
-            // Update both current and pending state
             Map<String, String> currentMap = myMapRef.get();
             currentMap.put(key, value);
-            
-            if (hasPendingState) {
-                pendingState.put(key, value);
-            }
             
             if (isPrimary) {
                 replicateToBackup(key, value, version);
@@ -172,10 +188,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
                 keyVersions.put(key, version);
                 Map<String, String> currentMap = myMapRef.get();
                 currentMap.put(key, value);
-                
-                if (hasPendingState) {
-                    pendingState.put(key, value);
-                }
             }
         } catch (Exception e) {
             log.error("Exception in putWithVersion(" + key + ", " + value + ", " + version + ")", e);
@@ -185,28 +197,20 @@ public class KeyValueHandler implements KeyValueService.Iface {
 
     public void syncState(Map<String, String> state) throws org.apache.thrift.TException {
         try {
-            // Non-blocking state sync
+            // For large states, use lazy sync - just mark as backup and let keys be requested on demand
+            if (state.size() > 1000) {
+                log.info("Large state detected (" + state.size() + " keys), using lazy sync");
+                isBackup = true;
+                // Don't block - let keys be requested on demand
+                return;
+            }
+            
+            // For small states, do immediate sync
             synchronized(stateSyncLock) {
-                // Store in pending state first
-                pendingState.clear();
-                pendingState.putAll(state);
-                hasPendingState = true;
-                
-                // Apply state in background
-                replicationExecutor.submit(() -> {
-                    try {
-                        Map<String, String> newMap = new ConcurrentHashMap<>(state);
-                        myMapRef.set(newMap);
-                        stateVersion = System.currentTimeMillis();
-                        hasPendingState = false;
-                        pendingState.clear();
-                        log.info("syncState: completed, state size=" + state.size());
-                    } catch (Exception e) {
-                        log.error("Error applying state in background", e);
-                    }
-                });
-                
-                log.info("syncState: started non-blocking sync, state size=" + state.size());
+                Map<String, String> newMap = new ConcurrentHashMap<>(state);
+                myMapRef.set(newMap);
+                stateVersion = System.currentTimeMillis();
+                log.info("syncState: immediate sync, state size=" + state.size());
             }
         } catch (Exception e) {
             log.error("Exception in syncState", e);
@@ -217,42 +221,34 @@ public class KeyValueHandler implements KeyValueService.Iface {
     // Enhanced state synchronization with version tracking
     public void syncStateWithVersions(Map<String, String> state, Map<String, Long> versions) throws org.apache.thrift.TException {
         try {
+            // For large states, use lazy sync
+            if (state.size() > 1000) {
+                log.info("Large state detected (" + state.size() + " keys), using lazy sync with versions");
+                isBackup = true;
+                // Don't block - let keys be requested on demand
+                return;
+            }
+            
             synchronized(stateSyncLock) {
-                // Store in pending state first
-                pendingState.clear();
-                pendingState.putAll(state);
-                hasPendingState = true;
+                Map<String, String> newMap = new ConcurrentHashMap<>();
                 
-                // Apply state in background with version checking
-                replicationExecutor.submit(() -> {
-                    try {
-                        Map<String, String> newMap = new ConcurrentHashMap<>();
-                        
-                        // Only update if version is newer
-                        for (Map.Entry<String, String> entry : state.entrySet()) {
-                            String key = entry.getKey();
-                            Long remoteVersion = versions.get(key);
-                            Long localVersion = keyVersions.get(key);
-                            
-                            if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
-                                newMap.put(key, entry.getValue());
-                                keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
-                            }
-                        }
-                        
-                        // Atomic swap
-                        myMapRef.set(newMap);
-                        stateVersion = System.currentTimeMillis();
-                        hasPendingState = false;
-                        pendingState.clear();
-                        
-                        log.info("syncStateWithVersions: completed, state size=" + newMap.size());
-                    } catch (Exception e) {
-                        log.error("Error applying state with versions in background", e);
+                // Only update if version is newer
+                for (Map.Entry<String, String> entry : state.entrySet()) {
+                    String key = entry.getKey();
+                    Long remoteVersion = versions.get(key);
+                    Long localVersion = keyVersions.get(key);
+                    
+                    if (remoteVersion == null || localVersion == null || remoteVersion > localVersion) {
+                        newMap.put(key, entry.getValue());
+                        keyVersions.put(key, remoteVersion != null ? remoteVersion : 1L);
                     }
-                });
+                }
                 
-                log.info("syncStateWithVersions: started non-blocking sync, state size=" + state.size());
+                // Atomic swap
+                myMapRef.set(newMap);
+                stateVersion = System.currentTimeMillis();
+                
+                log.info("syncStateWithVersions: immediate sync, state size=" + newMap.size());
             }
         } catch (Exception e) {
             log.error("Exception in syncStateWithVersions", e);
