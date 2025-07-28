@@ -138,8 +138,23 @@ public class StorageNode {
                     transport.open();
                     TProtocol protocol = new TBinaryProtocol(transport);
                     KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
-                    Map<String, String> state = primaryClient.getCurrentState();
-                    handler.syncState(state);
+                    
+                    // Use enhanced state synchronization with version tracking
+                    try {
+                        Map<String, Object> stateWithVersions = primaryClient.getCurrentStateWithVersions();
+                        @SuppressWarnings("unchecked")
+                        Map<String, String> state = (Map<String, String>) stateWithVersions.get("state");
+                        @SuppressWarnings("unchecked")
+                        Map<String, Long> versions = (Map<String, Long>) stateWithVersions.get("versions");
+                        
+                        handler.syncStateWithVersions(state, versions);
+                    } catch (Exception e) {
+                        log.warn("Enhanced sync failed, falling back to basic sync", e);
+                        // Fallback to basic sync
+                        Map<String, String> state = primaryClient.getCurrentState();
+                        handler.syncState(state);
+                    }
+                    
                     transport.close();
                 } catch (Exception e) {
                     log.error("Failed to sync state from primary", e);
