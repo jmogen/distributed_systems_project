@@ -119,19 +119,20 @@ public class StorageNode {
         }
     }
 
+    // Add to StorageNode.java - ensure immediate availability
     static void updateRole() {
         try {
             List<String> children = curClient.getChildren().usingWatcher(new RoleWatcher()).forPath(mainArgs[3]);
             Collections.sort(children);
             String primaryChild = children.get(0);
-            String myChild = myZnode.substring(mainArgs[3].length() + 1); // extract child name
+            String myChild = myZnode.substring(mainArgs[3].length() + 1);
             boolean isPrimary = myChild.equals(primaryChild);
             
-            // IMMEDIATE ROLE UPDATE - don't block
+            // IMMEDIATE ROLE UPDATE - no blocking
             handler.setPrimary(isPrimary);
             
             if (isPrimary) {
-                log.info("I am the primary");
+                log.info("I am the primary - immediately available");
                 if (children.size() > 1) {
                     String backupChild = children.get(1);
                     byte[] backupData = curClient.getData().forPath(mainArgs[3] + "/" + backupChild);
@@ -141,37 +142,9 @@ public class StorageNode {
                     handler.setBackupAddress(null, -1);
                 }
             } else {
-                log.info("I am the backup");
-                byte[] primaryData = curClient.getData().forPath(mainArgs[3] + "/" + primaryChild);
-                String[] primaryHostPort = new String(primaryData).split(":");
-                
-                // BACKGROUND STATE SYNC - don't block role change
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        TSocket sock = new TSocket(primaryHostPort[0], Integer.parseInt(primaryHostPort[1]));
-                        sock.setTimeout(3000); // 3 second timeout
-                        TTransport transport = new TFramedTransport(sock);
-                        transport.open();
-                        TProtocol protocol = new TBinaryProtocol(transport);
-                        KeyValueService.Client primaryClient = new KeyValueService.Client(protocol);
-                        
-                        try {
-                            Map<String, String> state = primaryClient.getCurrentState();
-                            if (state.size() <= 100) { // Only transfer very small states
-                                handler.syncState(state);
-                                log.info("Background state sync completed: " + state.size() + " keys");
-                            } else {
-                                log.info("Large state detected (" + state.size() + " keys), skipping sync");
-                            }
-                        } catch (Exception e) {
-                            log.warn("Background state sync failed, continuing without transfer", e);
-                        }
-                        
-                        transport.close();
-                    } catch (Exception e) {
-                        log.error("Background state sync failed", e);
-                    }
-                });
+                log.info("I am the backup - immediately available");
+                // NO STATE TRANSFER - let replication handle consistency
+                log.info("Skipping state transfer - will use replication for consistency");
             }
         } catch (Exception e) {
             log.error("Error in updateRole", e);

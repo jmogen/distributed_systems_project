@@ -33,6 +33,11 @@ public class Client implements CuratorWatcher {
     volatile InetSocketAddress primaryAddress;
     ExecutionLogger exlog;
 
+    private volatile String currentPrimaryHost = null;
+    private volatile int currentPrimaryPort = -1;
+    private volatile boolean isReconnecting = false;
+    private final Object connectionLock = new Object();
+
     public static void main(String [] args) throws Exception {
 	if (args.length != 5) {
 	    System.err.println("Usage: java Client zkconnectstring zknode num_threads num_seconds keyspace_size");
@@ -161,6 +166,118 @@ public class Client implements CuratorWatcher {
 	    log.error("Unable to determine primary");
 	}
 
+    }
+
+    private void findPrimaryWithRetry() {
+        int retryCount = 0;
+        while (retryCount < 5) {
+            try {
+                List<String> children = curClient.getChildren().forPath("/" + zkNode);
+                Collections.sort(children);
+                String primaryChild = children.get(0);
+                byte[] primaryData = curClient.getData().forPath("/" + zkNode + "/" + primaryChild);
+                String[] primaryHostPort = new String(primaryData).split(":");
+                
+                synchronized(connectionLock) {
+                    currentPrimaryHost = primaryHostPort[0];
+                    currentPrimaryPort = Integer.parseInt(primaryHostPort[1]);
+                }
+                
+                // Test connection to new primary
+                if (testConnection(currentPrimaryHost, currentPrimaryPort)) {
+                    log.info("Found primary: " + currentPrimaryHost + ":" + currentPrimaryPort);
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("Failed to find primary, retry " + retryCount, e);
+            }
+            retryCount++;
+            try {
+                Thread.sleep(100); // Short delay between retries
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        log.error("Failed to find primary after " + retryCount + " retries");
+    }
+    
+    private boolean testConnection(String host, int port) {
+        try {
+            TSocket sock = new TSocket(host, port);
+            sock.setTimeout(1000); // 1 second timeout
+            TTransport transport = new TFramedTransport(sock);
+            transport.open();
+            TProtocol protocol = new TBinaryProtocol(transport);
+            KeyValueService.Client client = new KeyValueService.Client(protocol);
+            client.get("__test__"); // Simple test call
+            transport.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    private String executeWithRetry(Operation operation) {
+        int retryCount = 0;
+        while (retryCount < 3) {
+            try {
+                synchronized(connectionLock) {
+                    if (currentPrimaryHost == null || currentPrimaryPort == -1) {
+                        findPrimaryWithRetry();
+                    }
+                }
+                
+                TSocket sock = new TSocket(currentPrimaryHost, currentPrimaryPort);
+                sock.setTimeout(2000); // 2 second timeout
+                TTransport transport = new TFramedTransport(sock);
+                transport.open();
+                TProtocol protocol = new TBinaryProtocol(transport);
+                KeyValueService.Client client = new KeyValueService.Client(protocol);
+                
+                String result = operation.execute(client);
+                transport.close();
+                return result;
+                
+            } catch (Exception e) {
+                log.warn("Operation failed, retry " + retryCount + ": " + e.getMessage());
+                retryCount++;
+                
+                // Force primary rediscovery on connection failure
+                synchronized(connectionLock) {
+                    currentPrimaryHost = null;
+                    currentPrimaryPort = -1;
+                }
+                
+                if (retryCount < 3) {
+                    try {
+                        Thread.sleep(50); // Short delay before retry
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        throw new RuntimeException("Operation failed after " + retryCount + " retries");
+    }
+    
+    @FunctionalInterface
+    private interface Operation {
+        String execute(KeyValueService.Client client) throws TException;
+    }
+    
+    // Enhanced get operation
+    public String get(String key) {
+        return executeWithRetry(client -> client.get(key));
+    }
+    
+    // Enhanced put operation  
+    public void put(String key, String value) {
+        executeWithRetry(client -> {
+            client.put(key, value);
+            return "OK";
+        });
     }
 
     class MyRunnable implements Runnable {
