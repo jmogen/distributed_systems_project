@@ -464,7 +464,21 @@ public class KeyValueHandler implements KeyValueService.Iface {
 			throw retryException;
 		    }
 		}
-	    	}
+	    }
+	}
+	
+	public void close() {
+	    synchronized (lock) {
+		isConnected = false;
+		if (transport != null) {
+		    try {
+			transport.close();
+		    } catch (Exception e) {
+			// Ignore close errors
+		    }
+		}
+	    }
+	}
     }
     
     private void tryGracefulDegradation() {
@@ -513,18 +527,4 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
     
     // Removed streaming approach - it was causing performance issues
-	
-	public void close() {
-	    synchronized (lock) {
-		isConnected = false;
-		if (transport != null) {
-		    try {
-			transport.close();
-		    } catch (Exception e) {
-			// Ignore close errors
-		    }
-		}
-	    }
-	}
-    }
 }
