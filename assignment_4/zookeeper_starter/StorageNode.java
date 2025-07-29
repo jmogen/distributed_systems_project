@@ -56,18 +56,14 @@ public class StorageNode {
         // Create server socket
         TServerSocket socket = new TServerSocket(port);
         
-        // Use thread pool server with proper configuration
-        TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
+        // Use simple server for maximum reliability
+        TSimpleServer.Args sargs = new TSimpleServer.Args(socket);
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxWorkerThreads(64);
-        sargs.minWorkerThreads(8);
-        sargs.requestTimeout(30000);
-        sargs.beBackoffSlotLength(1000);
         
         // Create server
-        server = new TThreadPoolServer(sargs);
+        server = new TSimpleServer(sargs);
         
         log.info("Launching server on port " + port);
 
@@ -83,7 +79,7 @@ public class StorageNode {
         thriftThread.start();
 
         // Wait for server to start
-        Thread.sleep(3000);
+        Thread.sleep(1000);
         
         log.info("Server should be serving on port " + port);
 
