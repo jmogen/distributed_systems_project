@@ -41,7 +41,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     
     // Performance optimization
-    private final ExecutorService replicationExecutor = Executors.newSingleThreadExecutor();
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
 
@@ -150,6 +149,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		currentPrimaryAddress = serverAddress;
 		replicationEnabled = false;
 		backupClient = null;
+		currentBackupAddress = null;
+		
+		// Wait a bit for the system to stabilize
+		Thread.sleep(200);
 		
 		// If there's a backup, set it up
 		if (children.size() > 1) {
@@ -164,6 +167,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		currentPrimaryAddress = null;
 		replicationEnabled = false;
 		backupClient = null;
+		currentBackupAddress = null;
+		
+		// Wait a bit for the system to stabilize
+		Thread.sleep(200);
 		
 		// Copy data from new primary
 		if (children.size() > 0) {
@@ -173,6 +180,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    currentPrimaryAddress = new String(primaryData);
 		    copyDataFromPrimary();
 		}
+		
+		// Ensure state consistency
+		ensureStateConsistency();
 	    }
 	} catch (Exception e) {
 	    log.error("Failed to handle node failure", e);
@@ -204,13 +214,15 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    String backupHost = parts[0];
 	    int backupPort = Integer.parseInt(parts[1]);
 	    
+	    log.info("Setting up replication to backup: " + currentBackupAddress);
 	    backupClient = new ReplicationClient(backupHost, backupPort);
 	    replicationEnabled = true;
-	    log.info("Setup replication to backup: " + currentBackupAddress);
+	    log.info("Successfully setup replication to backup: " + currentBackupAddress);
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
 	    backupClient = null;
+	    currentBackupAddress = null;
 	}
     }
     
@@ -222,6 +234,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    String primaryHost = parts[0];
 	    int primaryPort = Integer.parseInt(parts[1]);
 	    
+	    log.info("Attempting to copy data from primary: " + currentPrimaryAddress);
 	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
 	    Map<String, String> primaryData = primaryClient.getAllData();
 	    
@@ -229,13 +242,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    try {
 		myMap.clear();
 		myMap.putAll(primaryData);
-		log.info("Copied " + primaryData.size() + " entries from primary");
+		log.info("Successfully copied " + primaryData.size() + " entries from primary");
 	    } finally {
 		stateLock.writeLock().unlock();
 	    }
 	    primaryClient.close();
 	} catch (Exception e) {
 	    log.error("Failed to copy data from primary", e);
+	    // If we can't copy data, we should not serve as backup
+	    isPrimary = false;
+	    currentPrimaryAddress = null;
 	}
     }
 
@@ -257,9 +273,18 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	try {
 	    myMap.put(key, value);
 	    
-	    // Replicate to backup if primary
+	    // Synchronous replication to backup if primary
 	    if (isPrimary && replicationEnabled && backupClient != null) {
-		replicateToBackup(key, value);
+		try {
+		    backupClient.put(key, value);
+		} catch (Exception e) {
+		    log.error("Failed to replicate to backup", e);
+		    // Mark replication as disabled if backup is unreachable
+		    if (e instanceof TTransportException) {
+			replicationEnabled = false;
+			backupClient = null;
+		    }
+		}
 	    }
 	} finally {
 	    stateLock.writeLock().unlock();
@@ -296,32 +321,21 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	if (backupClient != null) {
 	    backupClient.close();
 	}
-	replicationExecutor.shutdown();
-	try {
-	    if (!replicationExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-		replicationExecutor.shutdownNow();
-	    }
-	} catch (InterruptedException e) {
-	    replicationExecutor.shutdownNow();
+    }
+    
+    private void ensureStateConsistency() {
+	// Ensure we're not in an inconsistent state
+	if (isPrimary && currentPrimaryAddress == null) {
+	    currentPrimaryAddress = serverAddress;
+	}
+	if (!isPrimary && currentPrimaryAddress == null) {
+	    // We're backup but don't know who primary is - this is bad
+	    log.error("Backup without primary address - resetting state");
+	    isPrimary = false;
 	}
     }
     
-    private void replicateToBackup(String key, String value) {
-	if (backupClient == null || isShuttingDown) return;
-	
-	// Use async replication for better performance
-	replicationExecutor.submit(() -> {
-	    try {
-		backupClient.put(key, value);
-	    } catch (Exception e) {
-		log.error("Failed to replicate to backup", e);
-		// Mark replication as disabled if backup is unreachable
-		if (e instanceof TTransportException) {
-		    replicationEnabled = false;
-		}
-	    }
-	});
-    }
+    // Removed replicateToBackup method - using synchronous replication directly in put()
     
     // Helper class for replication
     private static class ReplicationClient {
@@ -329,6 +343,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	private final int port;
 	private TTransport transport;
 	private KeyValueService.Client client;
+	private final Object lock = new Object();
+	private volatile boolean isConnected = false;
 	
 	public ReplicationClient(String host, int port) throws Exception {
 	    this.host = host;
@@ -337,29 +353,61 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
 	
 	private void connect() throws Exception {
-	    transport = new TFramedTransport(new TSocket(host, port));
-	    transport.open();
-	    TProtocol protocol = new TBinaryProtocol(transport);
-	    client = new KeyValueService.Client(protocol);
+	    synchronized (lock) {
+		if (transport != null) {
+		    try {
+			transport.close();
+		    } catch (Exception e) {
+			// Ignore close errors
+		    }
+		}
+		
+		transport = new TFramedTransport(new TSocket(host, port, 5000)); // 5 second timeout
+		transport.open();
+		TProtocol protocol = new TBinaryProtocol(transport);
+		client = new KeyValueService.Client(protocol);
+		isConnected = true;
+	    }
 	}
 	
 	public void put(String key, String value) throws Exception {
-	    if (transport == null || !transport.isOpen()) {
-		connect();
+	    synchronized (lock) {
+		if (!isConnected || transport == null || !transport.isOpen()) {
+		    connect();
+		}
+		try {
+		    client.put(key, value);
+		} catch (Exception e) {
+		    isConnected = false;
+		    throw e;
+		}
 	    }
-	    client.put(key, value);
 	}
 	
 	public Map<String, String> getAllData() throws Exception {
-	    if (transport == null || !transport.isOpen()) {
-		connect();
+	    synchronized (lock) {
+		if (!isConnected || transport == null || !transport.isOpen()) {
+		    connect();
+		}
+		try {
+		    return client.getAllData();
+		} catch (Exception e) {
+		    isConnected = false;
+		    throw e;
+		}
 	    }
-	    return client.getAllData();
 	}
 	
 	public void close() {
-	    if (transport != null) {
-		transport.close();
+	    synchronized (lock) {
+		isConnected = false;
+		if (transport != null) {
+		    try {
+			transport.close();
+		    } catch (Exception e) {
+			// Ignore close errors
+		    }
+		}
 	    }
 	}
     }
