@@ -53,18 +53,21 @@ public class StorageNode {
         // Create processor
         KeyValueService.Processor<KeyValueService.Iface> processor = new KeyValueService.Processor<>(handler);
         
-        // Create non-blocking server transport
-        TNonblockingServerTransport transport = new TNonblockingServerSocket(port);
+        // Create server socket
+        TServerSocket socket = new TServerSocket(port);
         
-        // Use non-blocking server
-        TNonblockingServer.Args sargs = new TNonblockingServer.Args(transport);
+        // Use thread pool server with proper configuration
+        TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        sargs.maxReadBufferBytes = 1024 * 1024; // 1MB buffer
+        sargs.maxWorkerThreads(64);
+        sargs.minWorkerThreads(8);
+        sargs.requestTimeout(30000);
+        sargs.beBackoffSlotLength(1000);
         
         // Create server
-        server = new TNonblockingServer(sargs);
+        server = new TThreadPoolServer(sargs);
         
         log.info("Launching server on port " + port);
 
@@ -80,7 +83,7 @@ public class StorageNode {
         thriftThread.start();
 
         // Wait for server to start
-        Thread.sleep(2000);
+        Thread.sleep(3000);
         
         log.info("Server should be serving on port " + port);
 
