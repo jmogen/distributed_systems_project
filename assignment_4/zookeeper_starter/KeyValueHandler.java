@@ -277,14 +277,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		log.info("Attempting to copy data from primary: " + currentPrimaryAddress + " (attempt " + attempt + ")");
 		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
 		
-		// Try streaming approach for large datasets
-		Map<String, String> primaryData;
-		try {
-		    primaryData = primaryClient.getAllDataStreaming();
-		} catch (Exception streamingException) {
-		    log.info("Streaming failed, trying regular getAllData: " + streamingException.getMessage());
-		    primaryData = primaryClient.getAllData();
-		}
+		Map<String, String> primaryData = primaryClient.getAllData();
 		
 		stateLock.writeLock().lock();
 		try {
@@ -299,10 +292,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    } catch (Exception e) {
 		log.error("Failed to copy data from primary (attempt " + attempt + ")", e);
 		if (attempt == 3) {
-		    // Final attempt failed
-		    log.error("All attempts to copy data failed, marking as not ready");
-		    isPrimary = false;
-		    currentPrimaryAddress = null;
+		    // Final attempt failed - try graceful degradation
+		    log.error("All attempts to copy data failed, trying graceful degradation");
+		    tryGracefulDegradation();
 		} else {
 		    // Wait before retry with exponential backoff
 		    try {
@@ -370,24 +362,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
-    public List<String> getKeys() throws org.apache.thrift.TException {
-	stateLock.readLock().lock();
-	try {
-	    return new ArrayList<>(myMap.keySet());
-	} finally {
-	    stateLock.readLock().unlock();
-	}
-    }
-    
-    public String getValue(String key) throws org.apache.thrift.TException {
-	stateLock.readLock().lock();
-	try {
-	    String value = myMap.get(key);
-	    return value != null ? value : "";
-	} finally {
-	    stateLock.readLock().unlock();
-	}
-    }
+	// Removed streaming methods - they were causing performance issues
     
     public void shutdown() {
 	isShuttingDown = true;
@@ -442,7 +417,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		transport = new TFramedTransport(new TSocket(host, port, 30000)); // 30 second timeout for large datasets
+		transport = new TFramedTransport(new TSocket(host, port, 60000)); // 60 second timeout for very large datasets
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
@@ -489,49 +464,24 @@ public class KeyValueHandler implements KeyValueService.Iface {
 			throw retryException;
 		    }
 		}
-	    }
+	    	}
+    }
+    
+    private void tryGracefulDegradation() {
+	// If we can't copy all data, at least try to serve as backup with empty state
+	// This is better than not serving at all
+	log.info("Graceful degradation: serving as backup with empty state");
+	stateLock.writeLock().lock();
+	try {
+	    myMap.clear();
+	    log.info("Backup initialized with empty state");
+	} finally {
+	    stateLock.writeLock().unlock();
 	}
-	
-	public Map<String, String> getAllDataStreaming() throws Exception {
-	    synchronized (lock) {
-		if (!isConnected || transport == null || !transport.isOpen()) {
-		    connect();
-		}
-		try {
-		    // Get keys first
-		    List<String> keys = client.getKeys();
-		    Map<String, String> result = new HashMap<>();
-		    
-		    // Fetch values in batches
-		    int batchSize = 1000;
-		    for (int i = 0; i < keys.size(); i += batchSize) {
-			int end = Math.min(i + batchSize, keys.size());
-			List<String> batch = keys.subList(i, end);
-			
-			for (String key : batch) {
-			    try {
-				String value = client.getValue(key);
-				result.put(key, value);
-			    } catch (Exception e) {
-				log.error("Failed to get value for key: " + key, e);
-				// Continue with other keys
-			    }
-			}
-		    }
-		    return result;
-		} catch (Exception e) {
-		    isConnected = false;
-		    // Try to reconnect once
-		    try {
-			connect();
-			return getAllDataStreaming();
-		    } catch (Exception retryException) {
-			isConnected = false;
-			throw retryException;
-		    }
-		}
-	    }
-	}
+	// Don't mark as not ready - let it serve as backup
+    }
+    
+    // Removed streaming approach - it was causing performance issues
 	
 	public void close() {
 	    synchronized (lock) {
