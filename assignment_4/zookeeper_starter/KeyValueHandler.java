@@ -20,6 +20,7 @@ import org.apache.curator.utils.*;
 import org.apache.log4j.*;
 
 public class KeyValueHandler implements KeyValueService.Iface {
+    private static final Logger log = Logger.getLogger(KeyValueHandler.class.getName());
     private Map<String, String> myMap;
     private CuratorFramework curClient;
     private String zkNode;
@@ -101,8 +102,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    } else {
 		log.info("I am a BACKUP");
 		if (children.size() > 0) {
-		    String primaryZnodeName = children.get(0);
-		    String primaryPath = zkNode + "/" + primaryZnodeName;
+		    String backupPrimaryZnodeName = children.get(0);
+		    String primaryPath = zkNode + "/" + backupPrimaryZnodeName;
 		    byte[] primaryData = curClient.getData().forPath(primaryPath);
 		    currentPrimaryAddress = new String(primaryData);
 		}
@@ -166,8 +167,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		
 		// Copy data from new primary
 		if (children.size() > 0) {
-		    String primaryZnodeName = children.get(0);
-		    String primaryPath = zkNode + "/" + primaryZnodeName;
+		    String failurePrimaryZnodeName = children.get(0);
+		    String primaryPath = zkNode + "/" + failurePrimaryZnodeName;
 		    byte[] primaryData = curClient.getData().forPath(primaryPath);
 		    currentPrimaryAddress = new String(primaryData);
 		    copyDataFromPrimary();

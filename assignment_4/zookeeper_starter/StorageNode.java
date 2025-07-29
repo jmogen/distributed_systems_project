@@ -52,7 +52,7 @@ public class StorageNode {
 	    });
 
 	// Create the enhanced key-value handler with ZooKeeper integration
-	KeyValueHandler handler = new KeyValueHandler(host, port, curClient, zkNode);
+	final KeyValueHandler handler = new KeyValueHandler(host, port, curClient, zkNode);
 	
 	KeyValueService.Processor<KeyValueService.Iface> processor = new KeyValueService.Processor<>(handler);
 	TServerSocket socket = new TServerSocket(port);
