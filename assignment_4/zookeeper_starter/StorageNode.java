@@ -44,6 +44,10 @@ public class StorageNode {
 	    .build();
 
 	curClient.start();
+	
+	// Create the enhanced key-value handler with ZooKeeper integration
+	final KeyValueHandler handler = new KeyValueHandler(host, port, curClient, zkNode);
+	
 	Runtime.getRuntime().addShutdownHook(new Thread() {
 		public void run() {
 		    handler.shutdown();
@@ -51,9 +55,6 @@ public class StorageNode {
 		}
 	    });
 
-	// Create the enhanced key-value handler with ZooKeeper integration
-	final KeyValueHandler handler = new KeyValueHandler(host, port, curClient, zkNode);
-	
 	KeyValueService.Processor<KeyValueService.Iface> processor = new KeyValueService.Processor<>(handler);
 	TServerSocket socket = new TServerSocket(port);
 	TThreadPoolServer.Args sargs = new TThreadPoolServer.Args(socket);
