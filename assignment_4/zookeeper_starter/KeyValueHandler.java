@@ -105,6 +105,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    String primaryPath = zkNode + "/" + backupPrimaryZnodeName;
 		    byte[] primaryData = curClient.getData().forPath(primaryPath);
 		    currentPrimaryAddress = new String(primaryData);
+		    // Copy data from primary when starting as backup
+		    copyDataFromPrimary();
 		}
 	    }
 	} catch (Exception e) {
@@ -183,6 +185,20 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		
 		// Ensure state consistency
 		ensureStateConsistency();
+	    } else if (!wasPrimary && !isPrimary) {
+		// We're still backup, but primary might have changed
+		if (children.size() > 0) {
+		    String newPrimaryZnodeName = children.get(0);
+		    String primaryPath = zkNode + "/" + newPrimaryZnodeName;
+		    byte[] primaryData = curClient.getData().forPath(primaryPath);
+		    String newPrimaryAddress = new String(primaryData);
+		    
+		    if (!newPrimaryAddress.equals(currentPrimaryAddress)) {
+			log.info("PRIMARY CHANGED from " + currentPrimaryAddress + " to " + newPrimaryAddress);
+			currentPrimaryAddress = newPrimaryAddress;
+			copyDataFromPrimary();
+		    }
+		}
 	    }
 	} catch (Exception e) {
 	    log.error("Failed to handle node failure", e);
@@ -194,12 +210,34 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    List<String> children = curClient.getChildren().forPath(zkNode);
 	    Collections.sort(children);
 	    
+	    String myZnodeName = myZnodePath.substring(myZnodePath.lastIndexOf('/') + 1);
+	    String primaryZnodeName = children.get(0);
+	    
+	    boolean wasPrimary = isPrimary;
+	    isPrimary = myZnodeName.equals(primaryZnodeName);
+	    
 	    if (isPrimary && children.size() > 1) {
 		String backupZnodeName = children.get(1);
 		String backupPath = zkNode + "/" + backupZnodeName;
 		byte[] backupData = curClient.getData().forPath(backupPath);
 		currentBackupAddress = new String(backupData);
 		setupBackupReplication();
+	    } else if (!isPrimary && wasPrimary) {
+		// We were primary but now we're not - this can happen when a new node joins
+		log.info("DEMOTED from PRIMARY to BACKUP due to new node");
+		currentPrimaryAddress = null;
+		replicationEnabled = false;
+		backupClient = null;
+		currentBackupAddress = null;
+		
+		// Copy data from new primary
+		if (children.size() > 0) {
+		    String newPrimaryZnodeName = children.get(0);
+		    String primaryPath = zkNode + "/" + newPrimaryZnodeName;
+		    byte[] primaryData = curClient.getData().forPath(primaryPath);
+		    currentPrimaryAddress = new String(primaryData);
+		    copyDataFromPrimary();
+		}
 	    }
 	} catch (Exception e) {
 	    log.error("Failed to handle node addition", e);
@@ -229,29 +267,44 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void copyDataFromPrimary() {
 	if (currentPrimaryAddress == null) return;
 	
-	try {
-	    String[] parts = currentPrimaryAddress.split(":");
-	    String primaryHost = parts[0];
-	    int primaryPort = Integer.parseInt(parts[1]);
-	    
-	    log.info("Attempting to copy data from primary: " + currentPrimaryAddress);
-	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
-	    Map<String, String> primaryData = primaryClient.getAllData();
-	    
-	    stateLock.writeLock().lock();
+	// Retry logic for data synchronization
+	for (int attempt = 1; attempt <= 3; attempt++) {
 	    try {
-		myMap.clear();
-		myMap.putAll(primaryData);
-		log.info("Successfully copied " + primaryData.size() + " entries from primary");
-	    } finally {
-		stateLock.writeLock().unlock();
+		String[] parts = currentPrimaryAddress.split(":");
+		String primaryHost = parts[0];
+		int primaryPort = Integer.parseInt(parts[1]);
+		
+		log.info("Attempting to copy data from primary: " + currentPrimaryAddress + " (attempt " + attempt + ")");
+		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
+		Map<String, String> primaryData = primaryClient.getAllData();
+		
+		stateLock.writeLock().lock();
+		try {
+		    myMap.clear();
+		    myMap.putAll(primaryData);
+		    log.info("Successfully copied " + primaryData.size() + " entries from primary");
+		} finally {
+		    stateLock.writeLock().unlock();
+		}
+		primaryClient.close();
+		return; // Success, exit retry loop
+	    } catch (Exception e) {
+		log.error("Failed to copy data from primary (attempt " + attempt + ")", e);
+		if (attempt == 3) {
+		    // Final attempt failed
+		    log.error("All attempts to copy data failed, marking as not ready");
+		    isPrimary = false;
+		    currentPrimaryAddress = null;
+		} else {
+		    // Wait before retry
+		    try {
+			Thread.sleep(1000);
+		    } catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+			break;
+		    }
+		}
 	    }
-	    primaryClient.close();
-	} catch (Exception e) {
-	    log.error("Failed to copy data from primary", e);
-	    // If we can't copy data, we should not serve as backup
-	    isPrimary = false;
-	    currentPrimaryAddress = null;
 	}
     }
 
