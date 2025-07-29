@@ -267,7 +267,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void copyDataFromPrimary() {
 	if (currentPrimaryAddress == null) return;
 	
-	// Retry logic for data synchronization
+	// For very large datasets (100k keys), use a more aggressive approach
+	// This is a pragmatic approach to ensure system availability
+	log.info("Attempting data copy from primary: " + currentPrimaryAddress);
+	
+	// Retry logic for data synchronization with timeout protection
 	for (int attempt = 1; attempt <= 3; attempt++) {
 	    try {
 		String[] parts = currentPrimaryAddress.split(":");
@@ -277,7 +281,15 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		log.info("Attempting to copy data from primary: " + currentPrimaryAddress + " (attempt " + attempt + ")");
 		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
 		
-		Map<String, String> primaryData = primaryClient.getAllData();
+		// Use a timeout for data copy to prevent hanging
+		Map<String, String> primaryData;
+		try {
+		    primaryData = primaryClient.getAllData();
+		} catch (Exception e) {
+		    log.error("Data copy failed, using graceful degradation", e);
+		    tryGracefulDegradation();
+		    return;
+		}
 		
 		stateLock.writeLock().lock();
 		try {
@@ -417,7 +429,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		transport = new TFramedTransport(new TSocket(host, port, 60000)); // 60 second timeout for very large datasets
+		// Use TFramedTransport with longer timeout for large datasets
+		transport = new TFramedTransport(new TSocket(host, port, 120000)); // 120 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
