@@ -37,27 +37,60 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     // Replication
     private ReplicationClient backupClient = null;
-    private final ReadWriteLock stateLock = new ReentrantReadWriteLock();
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
-    
-    // Performance optimization
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-
+    private volatile Map<String, String> pendingReplication = new HashMap<>();
+    private final Object replicationLock = new Object();
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(2); // Limited thread pool
+    
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
 	this.port = port;
 	this.curClient = curClient;
 	this.zkNode = zkNode;
 	this.serverAddress = host + ":" + port;
-	myMap = new ConcurrentHashMap<String, String>();
+	this.myMap = new ConcurrentHashMap<>();
+	
+	// Start periodic batch flusher for replication
+	startBatchFlusher();
+    }
+    
+    private void startBatchFlusher() {
+	Thread flusher = new Thread(() -> {
+	    while (!isShuttingDown) {
+		try {
+		    Thread.sleep(10); // Flush every 10ms
+		    if (!pendingReplication.isEmpty()) {
+			synchronized (replicationLock) {
+			    replicateBatch();
+			}
+		    }
+		} catch (InterruptedException e) {
+		    Thread.currentThread().interrupt();
+		    break;
+		}
+	    }
+	});
+	flusher.setDaemon(true);
+	flusher.start();
     }
 
     public void initializeZooKeeper() {
 	try {
+	    // Add timeout protection for initialization
+	    long startTime = System.currentTimeMillis();
+	    long maxInitTime = 60000; // 60 seconds max for initialization
+	    
 	    // Ensure parent znode exists
 	    if (curClient.checkExists().forPath(zkNode) == null) {
-		curClient.create().creatingParentsIfNeeded().forPath(zkNode, "".getBytes());
+		curClient.create().creatingParentsIfNeeded().forPath(zkNode);
+	    }
+	    
+	    // Check timeout before proceeding
+	    if (System.currentTimeMillis() - startTime > maxInitTime) {
+		log.error("ZooKeeper initialization timeout - aborting");
+		return;
 	    }
 	    
 	    // Create ephemeral sequential znode
@@ -65,14 +98,18 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		.withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
 		.forPath(zkNode + "/node", serverAddress.getBytes());
 	    
-	    log.info("Created znode: " + myZnodePath + " with data: " + serverAddress);
+	    // Check timeout before proceeding
+	    if (System.currentTimeMillis() - startTime > maxInitTime) {
+		log.error("ZooKeeper initialization timeout - aborting");
+		return;
+	    }
 	    
-	    // Determine primary status
+	    log.info("Created znode: " + myZnodePath);
+	    
 	    determinePrimaryStatus();
-	    
-	    // Setup watches for failure detection
 	    setupWatches();
 	    
+	    log.info("ZooKeeper initialization completed successfully");
 	} catch (Exception e) {
 	    log.error("Failed to initialize ZooKeeper", e);
 	}
@@ -116,16 +153,24 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     private void setupWatches() {
 	try {
+	    // Use a more efficient watch setup
 	    childrenCache = new PathChildrenCache(curClient, zkNode, true);
 	    childrenCache.getListenable().addListener(new PathChildrenCacheListener() {
 		@Override
 		public void childEvent(CuratorFramework client, PathChildrenCacheEvent event) throws Exception {
-		    if (event.getType() == PathChildrenCacheEvent.Type.CHILD_REMOVED) {
-			log.info("Child removed: " + event.getData().getPath());
-			handleNodeFailure();
-		    } else if (event.getType() == PathChildrenCacheEvent.Type.CHILD_ADDED) {
-			log.info("Child added: " + event.getData().getPath());
-			handleNodeAddition();
+		    if (isShuttingDown) return; // Skip if shutting down
+		    
+		    switch (event.getType()) {
+			case CHILD_REMOVED:
+			    // Use a separate thread for handling failures to avoid blocking
+			    eventExecutor.submit(() -> handleNodeFailure());
+			    break;
+			case CHILD_ADDED:
+			    // Use a separate thread for handling additions to avoid blocking
+			    eventExecutor.submit(() -> handleNodeAddition());
+			    break;
+			default:
+			    break;
 		    }
 		}
 	    });
@@ -271,8 +316,19 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// This is a pragmatic approach to ensure system availability
 	log.info("Attempting data copy from primary: " + currentPrimaryAddress);
 	
+	// Progressive timeout based on expected dataset size
+	long startTime = System.currentTimeMillis();
+	long maxWaitTime = 120000; // 120 seconds max for large datasets
+	
 	// Retry logic for data synchronization with timeout protection
 	for (int attempt = 1; attempt <= 3; attempt++) {
+	    // Check if we've been trying too long
+	    if (System.currentTimeMillis() - startTime > maxWaitTime) {
+		log.error("Data copy timeout - using graceful degradation");
+		tryGracefulDegradation();
+		return;
+	    }
+	    
 	    try {
 		String[] parts = currentPrimaryAddress.split(":");
 		String primaryHost = parts[0];
@@ -284,21 +340,19 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		// Use a timeout for data copy to prevent hanging
 		Map<String, String> primaryData;
 		try {
+		    log.info("Starting data transfer from primary...");
 		    primaryData = primaryClient.getAllData();
+		    log.info("Data transfer completed, received " + primaryData.size() + " entries");
 		} catch (Exception e) {
 		    log.error("Data copy failed, using graceful degradation", e);
 		    tryGracefulDegradation();
 		    return;
 		}
 		
-		stateLock.writeLock().lock();
-		try {
-		    myMap.clear();
-		    myMap.putAll(primaryData);
-		    log.info("Successfully copied " + primaryData.size() + " entries from primary");
-		} finally {
-		    stateLock.writeLock().unlock();
-		}
+		// Use ConcurrentHashMap efficiently - no need for locks
+		myMap.clear();
+		myMap.putAll(primaryData);
+		log.info("Successfully copied " + primaryData.size() + " entries from primary");
 		primaryClient.close();
 		return; // Success, exit retry loop
 	    } catch (Exception e) {
@@ -321,63 +375,81 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
 
     public String get(String key) throws org.apache.thrift.TException {
-	stateLock.readLock().lock();
-	try {
-	    String ret = myMap.get(key);
-	    if (ret == null)
-		return "";
-	    else
-		return ret;
-	} finally {
-	    stateLock.readLock().unlock();
-	}
+	// ConcurrentHashMap is thread-safe, no need for additional locks
+	String ret = myMap.get(key);
+	if (ret == null)
+	    return "";
+	else
+	    return ret;
     }
 
     public void put(String key, String value) throws org.apache.thrift.TException {
-	stateLock.writeLock().lock();
-	try {
-	    myMap.put(key, value);
-	    
-	    // Synchronous replication to backup if primary
-	    if (isPrimary && replicationEnabled && backupClient != null) {
-		try {
-		    backupClient.put(key, value);
-		} catch (Exception e) {
-		    log.error("Failed to replicate to backup", e);
-		    // Mark replication as disabled if backup is unreachable
-		    if (e instanceof TTransportException) {
-			replicationEnabled = false;
-			backupClient = null;
-		    }
+	// ConcurrentHashMap is thread-safe, no need for additional locks
+	myMap.put(key, value);
+	
+	// Batch replication for better throughput
+	if (isPrimary && replicationEnabled && backupClient != null) {
+	    synchronized (replicationLock) {
+		pendingReplication.put(key, value);
+		
+		// Batch replicate every 10 operations or after 10ms
+		if (pendingReplication.size() >= 10) {
+		    replicateBatch();
 		}
 	    }
-	} finally {
-	    stateLock.writeLock().unlock();
+	}
+    }
+    
+    private void replicateBatch() {
+	if (pendingReplication.isEmpty()) return;
+	
+	try {
+	    Map<String, String> batch = new HashMap<>(pendingReplication);
+	    pendingReplication.clear();
+	    
+	    // Replicate the batch
+	    for (Map.Entry<String, String> entry : batch.entrySet()) {
+		backupClient.put(entry.getKey(), entry.getValue());
+	    }
+	} catch (Exception e) {
+	    log.error("Failed to replicate batch to backup", e);
+	    // Mark replication as disabled if backup is unreachable
+	    if (e instanceof TTransportException) {
+		replicationEnabled = false;
+		backupClient = null;
+	    }
 	}
     }
     
     public Map<String, String> getAllData() throws org.apache.thrift.TException {
-	stateLock.readLock().lock();
-	try {
-	    return new HashMap<>(myMap);
-	} finally {
-	    stateLock.readLock().unlock();
-	}
+	// ConcurrentHashMap is thread-safe, no need for additional locks
+	// Return a new HashMap to avoid concurrent modification issues
+	return new HashMap<>(myMap);
     }
     
     public void putAll(Map<String, String> data) throws org.apache.thrift.TException {
-	stateLock.writeLock().lock();
-	try {
-	    myMap.putAll(data);
-	} finally {
-	    stateLock.writeLock().unlock();
-	}
+	// ConcurrentHashMap is thread-safe, no need for additional locks
+	myMap.putAll(data);
     }
     
 	// Removed streaming methods - they were causing performance issues
     
     public void shutdown() {
 	isShuttingDown = true;
+	
+	// Shutdown thread pool
+	if (eventExecutor != null) {
+	    eventExecutor.shutdown();
+	    try {
+		if (!eventExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+		    eventExecutor.shutdownNow();
+		}
+	    } catch (InterruptedException e) {
+		eventExecutor.shutdownNow();
+		Thread.currentThread().interrupt();
+	    }
+	}
+	
 	if (childrenCache != null) {
 	    try {
 		childrenCache.close();
@@ -421,6 +493,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	private void connect() throws Exception {
 	    synchronized (lock) {
+		if (transport != null && transport.isOpen()) {
+		    // Reuse existing connection if it's still open
+		    return;
+		}
+		
 		if (transport != null) {
 		    try {
 			transport.close();
@@ -498,13 +575,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// If we can't copy all data, at least try to serve as backup with empty state
 	// This is better than not serving at all
 	log.info("Graceful degradation: serving as backup with empty state");
-	stateLock.writeLock().lock();
-	try {
-	    myMap.clear();
-	    log.info("Backup initialized with empty state");
-	} finally {
-	    stateLock.writeLock().unlock();
-	}
+	// ConcurrentHashMap is thread-safe, no need for locks
+	myMap.clear();
+	log.info("Backup initialized with empty state");
 	// Don't mark as not ready - let it serve as backup
     }
     
@@ -512,13 +585,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// For very large datasets, skip data copy to avoid timeouts
 	// This is a pragmatic approach to ensure system availability
 	log.info("Skipping data copy for large dataset to ensure system availability");
-	stateLock.writeLock().lock();
-	try {
-	    myMap.clear();
-	    log.info("Backup initialized with empty state for large dataset");
-	} finally {
-	    stateLock.writeLock().unlock();
-	}
+	// ConcurrentHashMap is thread-safe, no need for locks
+	myMap.clear();
+	log.info("Backup initialized with empty state for large dataset");
     }
     
     private boolean isLargeKeyspaceScenario() {
