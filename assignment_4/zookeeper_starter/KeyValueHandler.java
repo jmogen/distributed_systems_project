@@ -276,7 +276,15 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		
 		log.info("Attempting to copy data from primary: " + currentPrimaryAddress + " (attempt " + attempt + ")");
 		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
-		Map<String, String> primaryData = primaryClient.getAllData();
+		
+		// Try streaming approach for large datasets
+		Map<String, String> primaryData;
+		try {
+		    primaryData = primaryClient.getAllDataStreaming();
+		} catch (Exception streamingException) {
+		    log.info("Streaming failed, trying regular getAllData: " + streamingException.getMessage());
+		    primaryData = primaryClient.getAllData();
+		}
 		
 		stateLock.writeLock().lock();
 		try {
@@ -296,9 +304,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    isPrimary = false;
 		    currentPrimaryAddress = null;
 		} else {
-		    // Wait before retry
+		    // Wait before retry with exponential backoff
 		    try {
-			Thread.sleep(1000);
+			Thread.sleep(2000 * attempt); // 2s, 4s, 6s
 		    } catch (InterruptedException ie) {
 			Thread.currentThread().interrupt();
 			break;
@@ -362,6 +370,25 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
+    public List<String> getKeys() throws org.apache.thrift.TException {
+	stateLock.readLock().lock();
+	try {
+	    return new ArrayList<>(myMap.keySet());
+	} finally {
+	    stateLock.readLock().unlock();
+	}
+    }
+    
+    public String getValue(String key) throws org.apache.thrift.TException {
+	stateLock.readLock().lock();
+	try {
+	    String value = myMap.get(key);
+	    return value != null ? value : "";
+	} finally {
+	    stateLock.readLock().unlock();
+	}
+    }
+    
     public void shutdown() {
 	isShuttingDown = true;
 	if (childrenCache != null) {
@@ -415,7 +442,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		transport = new TFramedTransport(new TSocket(host, port, 5000)); // 5 second timeout
+		transport = new TFramedTransport(new TSocket(host, port, 30000)); // 30 second timeout for large datasets
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
@@ -432,7 +459,14 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    client.put(key, value);
 		} catch (Exception e) {
 		    isConnected = false;
-		    throw e;
+		    // Try to reconnect once
+		    try {
+			connect();
+			client.put(key, value);
+		    } catch (Exception retryException) {
+			isConnected = false;
+			throw retryException;
+		    }
 		}
 	    }
 	}
@@ -446,7 +480,55 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    return client.getAllData();
 		} catch (Exception e) {
 		    isConnected = false;
-		    throw e;
+		    // Try to reconnect once
+		    try {
+			connect();
+			return client.getAllData();
+		    } catch (Exception retryException) {
+			isConnected = false;
+			throw retryException;
+		    }
+		}
+	    }
+	}
+	
+	public Map<String, String> getAllDataStreaming() throws Exception {
+	    synchronized (lock) {
+		if (!isConnected || transport == null || !transport.isOpen()) {
+		    connect();
+		}
+		try {
+		    // Get keys first
+		    List<String> keys = client.getKeys();
+		    Map<String, String> result = new HashMap<>();
+		    
+		    // Fetch values in batches
+		    int batchSize = 1000;
+		    for (int i = 0; i < keys.size(); i += batchSize) {
+			int end = Math.min(i + batchSize, keys.size());
+			List<String> batch = keys.subList(i, end);
+			
+			for (String key : batch) {
+			    try {
+				String value = client.getValue(key);
+				result.put(key, value);
+			    } catch (Exception e) {
+				log.error("Failed to get value for key: " + key, e);
+				// Continue with other keys
+			    }
+			}
+		    }
+		    return result;
+		} catch (Exception e) {
+		    isConnected = false;
+		    // Try to reconnect once
+		    try {
+			connect();
+			return getAllDataStreaming();
+		    } catch (Exception retryException) {
+			isConnected = false;
+			throw retryException;
+		    }
 		}
 	    }
 	}
