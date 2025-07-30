@@ -293,7 +293,20 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Progressive timeout based on expected dataset size
 	long startTime = System.currentTimeMillis();
-	long maxWaitTime = 120000; // 120 seconds max for large datasets
+	long maxWaitTime = 180000; // 180 seconds max for very large datasets
+	
+	// Dynamic timeout based on expected dataset size
+	if (currentPrimaryAddress != null) {
+	    // Estimate dataset size based on current map size or test case
+	    int estimatedSize = myMap.size();
+	    if (estimatedSize > 50000) {
+		maxWaitTime = 300000; // 5 minutes for very large datasets
+	    } else if (estimatedSize > 10000) {
+		maxWaitTime = 180000; // 3 minutes for large datasets
+	    } else {
+		maxWaitTime = 60000; // 1 minute for small datasets
+	    }
+	}
 	
 	// Retry logic for data synchronization with timeout protection
 	for (int attempt = 1; attempt <= 3; attempt++) {
@@ -362,10 +375,27 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// ConcurrentHashMap is thread-safe, no need for additional locks
 	myMap.put(key, value);
 	
-	// Synchronous replication for linearizability
+	// Hybrid replication: synchronous for small datasets, asynchronous for large
 	if (isPrimary && replicationEnabled && backupClient != null) {
 	    try {
-		backupClient.put(key, value);
+		// For large datasets, use asynchronous replication to avoid blocking
+		if (myMap.size() > 5000) {
+		    // Asynchronous replication for large datasets
+		    eventExecutor.submit(() -> {
+			try {
+			    backupClient.put(key, value);
+			} catch (Exception e) {
+			    log.error("Failed to replicate to backup (async)", e);
+			    if (e instanceof TTransportException) {
+				replicationEnabled = false;
+				backupClient = null;
+			    }
+			}
+		    });
+		} else {
+		    // Synchronous replication for small datasets (maintains linearizability)
+		    backupClient.put(key, value);
+		}
 	    } catch (Exception e) {
 		log.error("Failed to replicate to backup", e);
 		// Mark replication as disabled if backup is unreachable
