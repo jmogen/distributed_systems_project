@@ -43,7 +43,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(2); // Limited thread pool
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4); // Optimized thread pool for non-blocking replication
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
@@ -292,43 +292,32 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	log.info("Attempting data copy from primary: " + currentPrimaryAddress);
 	
-	// For large datasets, use a pragmatic approach
-	try {
-	    String[] parts = currentPrimaryAddress.split(":");
-	    String primaryHost = parts[0];
-	    int primaryPort = Integer.parseInt(parts[1]);
-	    
-	    log.info("Connecting to primary at " + primaryHost + ":" + primaryPort);
-	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
-	    
-	    log.info("Requesting all data from primary...");
-	    Map<String, String> primaryData = primaryClient.getAllData();
-	    
-	    log.info("Received " + primaryData.size() + " entries from primary");
-	    
-	    if (primaryData.size() > 10000) {
-		// For large datasets, accept that we may not get all data
-		// This is a pragmatic approach to ensure system availability
-		log.info("Large dataset detected (" + primaryData.size() + " entries)");
-		log.info("Using pragmatic approach: copy what we can, serve with partial data");
+	// Use non-blocking data synchronization for better performance
+	eventExecutor.submit(() -> {
+	    try {
+		String[] parts = currentPrimaryAddress.split(":");
+		String primaryHost = parts[0];
+		int primaryPort = Integer.parseInt(parts[1]);
 		
-		// Copy what we received (may be partial due to network issues)
-		myMap.clear();
-		myMap.putAll(primaryData);
-		log.info("Successfully copied " + primaryData.size() + " entries (may be partial)");
-	    } else {
-		// Small dataset - full copy
-		log.info("Small dataset (" + primaryData.size() + " entries), performing full copy");
+		log.info("Connecting to primary at " + primaryHost + ":" + primaryPort);
+		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
+		
+		log.info("Requesting all data from primary...");
+		Map<String, String> primaryData = primaryClient.getAllData();
+		
+		log.info("Received " + primaryData.size() + " entries from primary");
+		
+		// Copy data efficiently
 		myMap.clear();
 		myMap.putAll(primaryData);
 		log.info("Successfully copied " + primaryData.size() + " entries from primary");
+		
+		primaryClient.close();
+	    } catch (Exception e) {
+		log.error("Failed to copy data from primary, using graceful degradation", e);
+		tryGracefulDegradation();
 	    }
-	    
-	    primaryClient.close();
-	} catch (Exception e) {
-	    log.error("Failed to copy data from primary, using graceful degradation", e);
-	    tryGracefulDegradation();
-	}
+	});
     }
     
     private void copyDataInChunks(Map<String, String> primaryData) {
@@ -385,14 +374,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    try {
-		// Simple synchronous replication - reliable and fast for most cases
-		backupClient.put(key, value);
-	    } catch (Exception e) {
-		log.error("Replication failed for key: " + key, e);
-		// Don't fail the operation - continue serving
-		// The backup will sync data when it becomes primary
-	    }
+	    // Use non-blocking replication for maximum throughput
+	    eventExecutor.submit(() -> {
+		try {
+		    backupClient.put(key, value);
+		} catch (Exception e) {
+		    log.error("Replication failed for key: " + key, e);
+		    // Don't fail the operation - continue serving
+		    // The backup will sync data when it becomes primary
+		}
+	    });
 	}
     }
     
@@ -481,8 +472,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with longer timeout for large datasets
-		transport = new TFramedTransport(new TSocket(host, port, 300000)); // 5 minutes timeout
+		// Use TFramedTransport with optimized timeout
+		transport = new TFramedTransport(new TSocket(host, port, 60000)); // 1 minute timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
