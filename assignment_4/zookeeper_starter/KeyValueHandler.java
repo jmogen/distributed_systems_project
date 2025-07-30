@@ -45,7 +45,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4); // Increased for async replication
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(6); // Increased for async replication with retry
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
@@ -370,17 +370,38 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Use asynchronous replication for better throughput
-	    // This allows the operation to complete quickly while replication happens in background
-	    eventExecutor.submit(() -> {
+	    // Use hybrid replication strategy based on dataset size
+	    if (myMap.size() <= 1000) {
+		// For small datasets, use synchronous replication for linearizability
 		try {
 		    backupClient.put(key, value);
 		} catch (Exception e) {
-		    log.error("Asynchronous replication failed for key: " + key, e);
+		    log.error("Synchronous replication failed for key: " + key, e);
 		    // Don't fail the operation - continue serving
-		    // The backup will sync data when it becomes primary
 		}
-	    });
+	    } else {
+		// For large datasets, use asynchronous replication with retry
+		eventExecutor.submit(() -> {
+		    for (int attempt = 1; attempt <= 3; attempt++) {
+			try {
+			    backupClient.put(key, value);
+			    return; // Success, exit retry loop
+			} catch (Exception e) {
+			    log.error("Asynchronous replication attempt " + attempt + " failed for key: " + key, e);
+			    if (attempt == 3) {
+				log.error("All replication attempts failed for key: " + key);
+			    } else {
+				try {
+				    Thread.sleep(10 * attempt); // Short backoff
+				} catch (InterruptedException ie) {
+				    Thread.currentThread().interrupt();
+				    break;
+				}
+			    }
+			}
+		    }
+		});
+	    }
 	}
     }
     
@@ -478,9 +499,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for better performance
-		// Reduced timeout since we're using async replication
-		transport = new TFramedTransport(new TSocket(host, port, 30000)); // 30 seconds timeout
+		// Use TFramedTransport with optimized timeout for hybrid approach
+		// Increased timeout for better reliability with async replication
+		transport = new TFramedTransport(new TSocket(host, port, 45000)); // 45 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
