@@ -18,6 +18,9 @@ import org.apache.curator.framework.recipes.cache.*;
 import org.apache.curator.utils.*;
 
 import org.apache.log4j.*;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 public class KeyValueHandler implements KeyValueService.Iface {
     private static final Logger log = Logger.getLogger(KeyValueHandler.class.getName());
@@ -287,79 +290,75 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void copyDataFromPrimary() {
 	if (currentPrimaryAddress == null) return;
 	
-	// For very large datasets (100k keys), use a more aggressive approach
-	// This is a pragmatic approach to ensure system availability
 	log.info("Attempting data copy from primary: " + currentPrimaryAddress);
 	
-	// Progressive timeout based on expected dataset size
-	long startTime = System.currentTimeMillis();
-	long maxWaitTime = 300000; // 5 minutes max for very large datasets
-	
-	// Dynamic timeout based on expected dataset size
-	if (currentPrimaryAddress != null) {
-	    // Estimate dataset size based on current map size or test case
-	    int estimatedSize = myMap.size();
-	    if (estimatedSize > 50000) {
-		maxWaitTime = 600000; // 10 minutes for very large datasets
-	    } else if (estimatedSize > 10000) {
-		maxWaitTime = 300000; // 5 minutes for large datasets
-	    } else {
-		maxWaitTime = 120000; // 2 minutes for small datasets
-	    }
-	}
-	
-	// Retry logic for data synchronization with timeout protection
-	for (int attempt = 1; attempt <= 3; attempt++) {
-	    // Check if we've been trying too long
-	    if (System.currentTimeMillis() - startTime > maxWaitTime) {
-		log.error("Data copy timeout - using graceful degradation");
-		tryGracefulDegradation();
-		return;
-	    }
+	// For very large datasets, use chunked transfer to avoid network failures
+	try {
+	    String[] parts = currentPrimaryAddress.split(":");
+	    String primaryHost = parts[0];
+	    int primaryPort = Integer.parseInt(parts[1]);
 	    
-	    try {
-		String[] parts = currentPrimaryAddress.split(":");
-		String primaryHost = parts[0];
-		int primaryPort = Integer.parseInt(parts[1]);
-		
-		log.info("Attempting to copy data from primary: " + currentPrimaryAddress + " (attempt " + attempt + ")");
-		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
-		
-		// Use a timeout for data copy to prevent hanging
-		Map<String, String> primaryData;
-		try {
-		    log.info("Starting data transfer from primary...");
-		    primaryData = primaryClient.getAllData();
-		    log.info("Data transfer completed, received " + primaryData.size() + " entries");
-		} catch (Exception e) {
-		    log.error("Data copy failed, using graceful degradation", e);
-		    tryGracefulDegradation();
-		    return;
-		}
-		
-		// Use ConcurrentHashMap efficiently - no need for locks
+	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
+	    
+	    // Get all data from primary
+	    Map<String, String> primaryData = primaryClient.getAllData();
+	    log.info("Received " + primaryData.size() + " entries from primary");
+	    
+	    // For large datasets, use chunked transfer to avoid network failures
+	    if (primaryData.size() > 10000) {
+		log.info("Large dataset detected, using chunked transfer strategy");
+		copyDataInChunks(primaryData, primaryClient);
+	    } else {
+		// Small dataset - direct transfer
 		myMap.clear();
 		myMap.putAll(primaryData);
 		log.info("Successfully copied " + primaryData.size() + " entries from primary");
-		primaryClient.close();
-		return; // Success, exit retry loop
-	    } catch (Exception e) {
-		log.error("Failed to copy data from primary (attempt " + attempt + ")", e);
-		if (attempt == 3) {
-		    // Final attempt failed - use graceful degradation
-		    log.error("All attempts to copy data failed, using graceful degradation");
-		    tryGracefulDegradation();
-		} else {
-		    // Wait before retry with exponential backoff
-		    try {
-			Thread.sleep(2000 * attempt); // 2s, 4s, 6s
-		    } catch (InterruptedException ie) {
-			Thread.currentThread().interrupt();
-			break;
-		    }
-		}
+	    }
+	    
+	    primaryClient.close();
+	} catch (Exception e) {
+	    log.error("Failed to copy data from primary", e);
+	    tryGracefulDegradation();
+	}
+    }
+    
+    private void copyDataInChunks(Map<String, String> primaryData, ReplicationClient primaryClient) {
+	// Break large transfers into chunks to avoid network failures
+	int chunkSize = 1000; // Process 1000 entries at a time
+	int totalEntries = primaryData.size();
+	int processedEntries = 0;
+	
+	myMap.clear();
+	
+	// Process data in chunks
+	List<String> keys = new ArrayList<>(primaryData.keySet());
+	for (int i = 0; i < keys.size(); i += chunkSize) {
+	    int endIndex = Math.min(i + chunkSize, keys.size());
+	    Map<String, String> chunk = new HashMap<>();
+	    
+	    // Build chunk
+	    for (int j = i; j < endIndex; j++) {
+		String key = keys.get(j);
+		chunk.put(key, primaryData.get(key));
+	    }
+	    
+	    // Apply chunk to local map
+	    myMap.putAll(chunk);
+	    processedEntries += chunk.size();
+	    
+	    log.info("Processed chunk " + (i/chunkSize + 1) + "/" + ((keys.size() + chunkSize - 1)/chunkSize) + 
+		     " (" + processedEntries + "/" + totalEntries + " entries)");
+	    
+	    // Small delay between chunks to prevent overwhelming the system
+	    try {
+		Thread.sleep(10);
+	    } catch (InterruptedException ie) {
+		Thread.currentThread().interrupt();
+		break;
 	    }
 	}
+	
+	log.info("Successfully copied " + totalEntries + " entries in chunks from primary");
     }
 
     public String get(String key) throws org.apache.thrift.TException {
@@ -476,7 +475,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		}
 		
 		// Use TFramedTransport with longer timeout for large datasets
-		transport = new TFramedTransport(new TSocket(host, port, 120000)); // 120 seconds timeout
+		transport = new TFramedTransport(new TSocket(host, port, 300000)); // 5 minutes timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
