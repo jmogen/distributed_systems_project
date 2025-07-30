@@ -45,7 +45,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4); // Increased for WAL processing
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(3); // Increased for WAL processing
     
     // Batch replication for high throughput
     private final Queue<ReplicationTask> replicationQueue = new ConcurrentLinkedQueue<>();
@@ -56,23 +56,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final Queue<WALEntry> writeAheadLog = new ConcurrentLinkedQueue<>();
     private final Object walLock = new Object();
     private volatile boolean walReplicationEnabled = false;
-    
-    // Replication task for batching
-    private static class ReplicationTask {
-	private final String key;
-	private final String value;
-	private final long timestamp;
-	
-	public ReplicationTask(String key, String value) {
-	    this.key = key;
-	    this.value = value;
-	    this.timestamp = System.currentTimeMillis();
-	}
-	
-	public String getKey() { return key; }
-	public String getValue() { return value; }
-	public long getTimestamp() { return timestamp; }
-    }
     
     // WAL Entry for durable writes
     private static class WALEntry {
@@ -92,6 +75,23 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	public long getTimestamp() { return timestamp; }
 	public boolean isReplicated() { return replicated; }
 	public void setReplicated(boolean replicated) { this.replicated = replicated; }
+    }
+    
+    // Replication task for batching
+    private static class ReplicationTask {
+	private final String key;
+	private final String value;
+	private final long timestamp;
+	
+	public ReplicationTask(String key, String value) {
+	    this.key = key;
+	    this.value = value;
+	    this.timestamp = System.currentTimeMillis();
+	}
+	
+	public String getKey() { return key; }
+	public String getValue() { return value; }
+	public long getTimestamp() { return timestamp; }
     }
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
@@ -326,7 +326,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    replicationEnabled = true;
 	    walReplicationEnabled = true;
 	    
-	    log.info("WAL-based backup replication setup completed");
+	    log.info("Hybrid WAL-based backup replication setup completed");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
@@ -438,14 +438,27 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// Use ConcurrentHashMap directly - it's thread-safe
 	myMap.put(key, value);
 	
-	// Write to WAL for durability
-	WALEntry walEntry = new WALEntry(key, value);
-	writeAheadLog.offer(walEntry);
-	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Start WAL replication in background for high throughput
-	    eventExecutor.submit(() -> replicateFromWAL());
+	    // Hybrid approach: sync for small datasets, WAL for large
+	    if (myMap.size() <= 1000) {
+		// Synchronous replication for small datasets (perfect linearizability)
+		try {
+		    backupClient.put(key, value);
+		} catch (Exception e) {
+		    // Single retry for reliability
+		    try {
+			backupClient.put(key, value);
+		    } catch (Exception retryException) {
+			// Continue serving - backup will sync later
+		    }
+		}
+	    } else {
+		// WAL replication for large datasets (high throughput)
+		WALEntry walEntry = new WALEntry(key, value);
+		writeAheadLog.offer(walEntry);
+		startWALReplication();
+	    }
 	}
     }
     
@@ -504,37 +517,76 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
-    private void replicateFromWAL() {
-	// Process WAL entries in batches for efficiency
-	List<WALEntry> batch = new ArrayList<>();
-	WALEntry entry;
-	
-	// Collect unreplicated entries
-	while ((entry = writeAheadLog.poll()) != null) {
-	    if (!entry.isReplicated()) {
-		batch.add(entry);
+    private void startWALReplication() {
+	synchronized (walLock) {
+	    if (!walReplicationEnabled) {
+		walReplicationEnabled = true;
+		eventExecutor.submit(this::processWALReplication);
 	    }
-	}
-	
-	if (!batch.isEmpty()) {
-	    // Replicate batch to backup
-	    replicateWALBatch(batch);
 	}
     }
     
-    private void replicateWALBatch(List<WALEntry> batch) {
-	try {
-	    // Send all operations in batch to backup
-	    for (WALEntry entry : batch) {
-		backupClient.put(entry.getKey(), entry.getValue());
-		entry.setReplicated(true);
+    private void processWALReplication() {
+	while (walReplicationEnabled && !isShuttingDown) {
+	    try {
+		// Process WAL entries with guaranteed delivery
+		List<WALEntry> batch = new ArrayList<>();
+		WALEntry entry;
+		
+		// Collect up to 50 unreplicated entries
+		while (batch.size() < 50 && (entry = writeAheadLog.poll()) != null) {
+		    if (!entry.isReplicated()) {
+			batch.add(entry);
+		    }
+		}
+		
+		if (!batch.isEmpty()) {
+		    // Replicate with guaranteed delivery
+		    replicateWALBatchWithRetry(batch);
+		} else {
+		    // No entries to process, sleep briefly
+		    Thread.sleep(10);
+		}
+	    } catch (Exception e) {
+		log.error("WAL replication failed", e);
+		// Don't disable WAL - keep trying
+		try {
+		    Thread.sleep(100);
+		} catch (InterruptedException ie) {
+		    Thread.currentThread().interrupt();
+		    break;
+		}
 	    }
-	} catch (Exception e) {
-	    log.error("WAL batch replication failed, returning entries to queue", e);
-	    // Return failed entries to WAL for retry
-	    for (WALEntry entry : batch) {
-		entry.setReplicated(false);
-		writeAheadLog.offer(entry);
+	}
+    }
+    
+    private void replicateWALBatchWithRetry(List<WALEntry> batch) {
+	// Try up to 3 times with exponential backoff
+	for (int attempt = 1; attempt <= 3; attempt++) {
+	    try {
+		// Send all operations in batch to backup
+		for (WALEntry entry : batch) {
+		    backupClient.put(entry.getKey(), entry.getValue());
+		    entry.setReplicated(true);
+		}
+		return; // Success, exit retry loop
+	    } catch (Exception e) {
+		log.error("WAL batch replication attempt " + attempt + " failed", e);
+		if (attempt == 3) {
+		    // Final attempt failed - return entries to WAL for later retry
+		    for (WALEntry entry : batch) {
+			entry.setReplicated(false);
+			writeAheadLog.offer(entry);
+		    }
+		} else {
+		    // Wait before retry with exponential backoff
+		    try {
+			Thread.sleep(50 * attempt);
+		    } catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+			break;
+		    }
+		}
 	    }
 	}
     }
