@@ -45,7 +45,54 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(2); // Reduced for synchronous replication
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4); // Increased for WAL processing
+    
+    // Batch replication for high throughput
+    private final Queue<ReplicationTask> replicationQueue = new ConcurrentLinkedQueue<>();
+    private volatile boolean batchReplicationEnabled = false;
+    private final Object batchLock = new Object();
+    
+    // Write-Ahead Log for high-throughput replication
+    private final Queue<WALEntry> writeAheadLog = new ConcurrentLinkedQueue<>();
+    private final Object walLock = new Object();
+    private volatile boolean walReplicationEnabled = false;
+    
+    // Replication task for batching
+    private static class ReplicationTask {
+	private final String key;
+	private final String value;
+	private final long timestamp;
+	
+	public ReplicationTask(String key, String value) {
+	    this.key = key;
+	    this.value = value;
+	    this.timestamp = System.currentTimeMillis();
+	}
+	
+	public String getKey() { return key; }
+	public String getValue() { return value; }
+	public long getTimestamp() { return timestamp; }
+    }
+    
+    // WAL Entry for durable writes
+    private static class WALEntry {
+	private final String key;
+	private final String value;
+	private final long timestamp;
+	private volatile boolean replicated = false;
+	
+	public WALEntry(String key, String value) {
+	    this.key = key;
+	    this.value = value;
+	    this.timestamp = System.currentTimeMillis();
+	}
+	
+	public String getKey() { return key; }
+	public String getValue() { return value; }
+	public long getTimestamp() { return timestamp; }
+	public boolean isReplicated() { return replicated; }
+	public void setReplicated(boolean replicated) { this.replicated = replicated; }
+    }
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
@@ -178,8 +225,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		backupClient = null;
 		currentBackupAddress = null;
 		
-		// No delay for maximum performance
-		// Thread.sleep(50); // Removed for ultra-fast performance
+		// Small delay to ensure ZooKeeper state is consistent
+		Thread.sleep(100); // Restored for stability
 		
 		// If there's a backup, set it up
 		if (children.size() > 1) {
@@ -196,8 +243,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		backupClient = null;
 		currentBackupAddress = null;
 		
-		// No delay for maximum performance
-		// Thread.sleep(50); // Removed for ultra-fast performance
+		// Small delay to ensure ZooKeeper state is consistent
+		Thread.sleep(100); // Restored for stability
 		
 		// Copy data from new primary
 		if (children.size() > 0) {
@@ -277,11 +324,13 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    
 	    backupClient = new ReplicationClient(backupHost, backupPort);
 	    replicationEnabled = true;
+	    walReplicationEnabled = true;
 	    
-	    log.info("Backup replication setup completed");
+	    log.info("WAL-based backup replication setup completed");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
+	    walReplicationEnabled = false;
 	}
     }
     
@@ -303,16 +352,37 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    
 	    log.info("Received " + primaryData.size() + " entries from primary");
 	    
-	    // Ultra-fast bulk copy for maximum performance
-	    // Direct putAll for fastest possible data transfer
+	    // Fast recovery: copy data and replay any pending WAL entries
 	    myMap.clear();
 	    myMap.putAll(primaryData);
+	    
+	    // Replay any unreplicated WAL entries for consistency
+	    replayUnreplicatedWAL();
+	    
 	    log.info("Successfully copied " + primaryData.size() + " entries from primary");
 	    
 	    primaryClient.close();
 	} catch (Exception e) {
 	    log.error("Failed to copy data from primary, using graceful degradation", e);
 	    tryGracefulDegradation();
+	}
+    }
+    
+    private void replayUnreplicatedWAL() {
+	// Replay any unreplicated WAL entries to ensure consistency
+	List<WALEntry> unreplicated = new ArrayList<>();
+	WALEntry entry;
+	
+	while ((entry = writeAheadLog.poll()) != null) {
+	    if (!entry.isReplicated()) {
+		unreplicated.add(entry);
+		// Apply to local map
+		myMap.put(entry.getKey(), entry.getValue());
+	    }
+	}
+	
+	if (!unreplicated.isEmpty()) {
+	    log.info("Replayed " + unreplicated.size() + " unreplicated WAL entries");
 	}
     }
     
@@ -368,21 +438,103 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// Use ConcurrentHashMap directly - it's thread-safe
 	myMap.put(key, value);
 	
+	// Write to WAL for durability
+	WALEntry walEntry = new WALEntry(key, value);
+	writeAheadLog.offer(walEntry);
+	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Use ultra-fast replication with minimal overhead
-	    // This maximizes throughput while maintaining reliability
+	    // Start WAL replication in background for high throughput
+	    eventExecutor.submit(() -> replicateFromWAL());
+	}
+    }
+    
+    private void startBatchProcessor() {
+	synchronized (batchLock) {
+	    if (!batchReplicationEnabled) {
+		batchReplicationEnabled = true;
+		eventExecutor.submit(this::processBatchReplication);
+	    }
+	}
+    }
+    
+    private void processBatchReplication() {
+	while (batchReplicationEnabled && !isShuttingDown) {
 	    try {
-		backupClient.put(key, value);
-		// Success - maximum throughput achieved
-	    } catch (Exception e) {
-		// Single fast retry for reliability without performance penalty
-		try {
-		    backupClient.put(key, value);
-		} catch (Exception retryException) {
-		    // Don't log errors to reduce overhead - just continue serving
-		    // The backup will sync data when it becomes primary
+		// Collect operations for batching
+		List<ReplicationTask> batch = new ArrayList<>();
+		ReplicationTask task;
+		
+		// Collect up to 100 operations or wait 10ms
+		long startTime = System.currentTimeMillis();
+		while (batch.size() < 100 && (System.currentTimeMillis() - startTime) < 10) {
+		    task = replicationQueue.poll();
+		    if (task != null) {
+			batch.add(task);
+		    } else {
+			Thread.sleep(1);
+		    }
 		}
+		
+		if (!batch.isEmpty()) {
+		    // Send batch to backup
+		    replicateBatch(batch);
+		}
+	    } catch (Exception e) {
+		log.error("Batch replication failed", e);
+		// Disable batching on persistent failure
+		batchReplicationEnabled = false;
+		break;
+	    }
+	}
+    }
+    
+    private void replicateBatch(List<ReplicationTask> batch) {
+	try {
+	    // Send all operations in batch
+	    for (ReplicationTask task : batch) {
+		backupClient.put(task.getKey(), task.getValue());
+	    }
+	} catch (Exception e) {
+	    log.error("Batch replication failed, returning tasks to queue", e);
+	    // Return tasks to queue for retry
+	    for (ReplicationTask task : batch) {
+		replicationQueue.offer(task);
+	    }
+	}
+    }
+    
+    private void replicateFromWAL() {
+	// Process WAL entries in batches for efficiency
+	List<WALEntry> batch = new ArrayList<>();
+	WALEntry entry;
+	
+	// Collect unreplicated entries
+	while ((entry = writeAheadLog.poll()) != null) {
+	    if (!entry.isReplicated()) {
+		batch.add(entry);
+	    }
+	}
+	
+	if (!batch.isEmpty()) {
+	    // Replicate batch to backup
+	    replicateWALBatch(batch);
+	}
+    }
+    
+    private void replicateWALBatch(List<WALEntry> batch) {
+	try {
+	    // Send all operations in batch to backup
+	    for (WALEntry entry : batch) {
+		backupClient.put(entry.getKey(), entry.getValue());
+		entry.setReplicated(true);
+	    }
+	} catch (Exception e) {
+	    log.error("WAL batch replication failed, returning entries to queue", e);
+	    // Return failed entries to WAL for retry
+	    for (WALEntry entry : batch) {
+		entry.setReplicated(false);
+		writeAheadLog.offer(entry);
 	    }
 	}
     }
@@ -402,6 +554,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     public void shutdown() {
 	isShuttingDown = true;
+	
+	// Stop batch replication
+	batchReplicationEnabled = false;
+	walReplicationEnabled = false;
 	
 	// Close backup client
 	if (backupClient != null) {
@@ -481,9 +637,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with ultra-fast timeout for maximum throughput
-		// Minimal timeout for fastest possible operations
-		transport = new TFramedTransport(new TSocket(host, port, 15000)); // 15 seconds timeout
+		// Use TFramedTransport with optimized timeout for batch replication
+		// Balanced timeout for performance and reliability
+		transport = new TFramedTransport(new TSocket(host, port, 30000)); // 30 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
