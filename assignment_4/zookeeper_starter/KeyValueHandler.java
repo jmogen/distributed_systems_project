@@ -40,8 +40,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private volatile Map<String, String> pendingReplication = new HashMap<>();
-    private final Object replicationLock = new Object();
     private final ExecutorService eventExecutor = Executors.newFixedThreadPool(2); // Limited thread pool
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
@@ -51,31 +49,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	this.zkNode = zkNode;
 	this.serverAddress = host + ":" + port;
 	this.myMap = new ConcurrentHashMap<>();
-	
-	// Start periodic batch flusher for replication
-	startBatchFlusher();
     }
     
-    private void startBatchFlusher() {
-	Thread flusher = new Thread(() -> {
-	    while (!isShuttingDown) {
-		try {
-		    Thread.sleep(10); // Flush every 10ms
-		    if (!pendingReplication.isEmpty()) {
-			synchronized (replicationLock) {
-			    replicateBatch();
-			}
-		    }
-		} catch (InterruptedException e) {
-		    Thread.currentThread().interrupt();
-		    break;
-		}
-	    }
-	});
-	flusher.setDaemon(true);
-	flusher.start();
-    }
-
     public void initializeZooKeeper() {
 	try {
 	    // Add timeout protection for initialization
@@ -387,36 +362,17 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	// ConcurrentHashMap is thread-safe, no need for additional locks
 	myMap.put(key, value);
 	
-	// Batch replication for better throughput
+	// Synchronous replication for linearizability
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    synchronized (replicationLock) {
-		pendingReplication.put(key, value);
-		
-		// Batch replicate every 10 operations or after 10ms
-		if (pendingReplication.size() >= 10) {
-		    replicateBatch();
+	    try {
+		backupClient.put(key, value);
+	    } catch (Exception e) {
+		log.error("Failed to replicate to backup", e);
+		// Mark replication as disabled if backup is unreachable
+		if (e instanceof TTransportException) {
+		    replicationEnabled = false;
+		    backupClient = null;
 		}
-	    }
-	}
-    }
-    
-    private void replicateBatch() {
-	if (pendingReplication.isEmpty()) return;
-	
-	try {
-	    Map<String, String> batch = new HashMap<>(pendingReplication);
-	    pendingReplication.clear();
-	    
-	    // Replicate the batch
-	    for (Map.Entry<String, String> entry : batch.entrySet()) {
-		backupClient.put(entry.getKey(), entry.getValue());
-	    }
-	} catch (Exception e) {
-	    log.error("Failed to replicate batch to backup", e);
-	    // Mark replication as disabled if backup is unreachable
-	    if (e instanceof TTransportException) {
-		replicationEnabled = false;
-		backupClient = null;
 	    }
 	}
     }
