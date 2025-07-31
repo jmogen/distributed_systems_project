@@ -45,8 +45,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    // Thread pool for background tasks (increased for maximum throughput)
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(8);
+    // Thread pool for background tasks (optimized for performance)
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4);
     
     // Connection pooling for improved throughput
     private final Map<String, ReplicationClient> clientPool = new ConcurrentHashMap<>();
@@ -59,8 +59,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		String[] parts = address.split(":");
 		client = new ReplicationClient(parts[0], Integer.parseInt(parts[1]));
 		clientPool.put(address, client);
-		// Pre-warm connection for maximum performance
-		client.put("warmup", "warmup");
 	    }
 	    return client;
 	}
@@ -298,7 +296,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
 	    
-	    log.info("Ultra-high-performance synchronous replication setup completed");
+	    // Removed logging for performance
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
@@ -308,26 +306,26 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void copyDataFromPrimary() {
 	if (currentPrimaryAddress == null) return;
 	
-	log.info("Attempting data copy from primary: " + currentPrimaryAddress);
+	// Removed logging for performance
 	
 	try {
 	    String[] parts = currentPrimaryAddress.split(":");
 	    String primaryHost = parts[0];
 	    int primaryPort = Integer.parseInt(parts[1]);
 	    
-	    log.info("Connecting to primary at " + primaryHost + ":" + primaryPort);
+	    // Removed logging for performance
 	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
 	    
-	    log.info("Requesting all data from primary...");
+	    // Removed logging for performance
 	    Map<String, String> primaryData = primaryClient.getAllData();
 	    
-	    log.info("Received " + primaryData.size() + " entries from primary");
+	    // Removed logging for performance
 	    
 	    // Copy data efficiently using putAll for maximum performance
 	    // For large datasets, this is much faster than individual puts
 	    myMap.clear();
 	    myMap.putAll(primaryData);
-	    log.info("Successfully copied " + primaryData.size() + " entries from primary");
+	    // Removed logging for performance
 	    
 	    primaryClient.close();
 	} catch (Exception e) {
@@ -363,16 +361,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     private void replicateHighPerformance(String key, String value) {
 	// Ultra-high-performance synchronous replication with minimal overhead
-	try {
-	    backupClient.put(key, value);
-	} catch (Exception e) {
-	    // Single ultra-fast retry with minimal delay
-	    try {
-		backupClient.put(key, value);
-	    } catch (Exception retryException) {
-		// Continue serving - backup will sync later
-	    }
-	}
+	// Direct call without retry for maximum speed
+	backupClient.put(key, value);
     }
     
     // Removed startBatchProcessor method - no batching
@@ -409,7 +399,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		try {
 		    client.close();
 		} catch (Exception e) {
-		    log.error("Error closing pooled client", e);
+		    // Removed logging for performance
 		}
 	    }
 	    clientPool.clear();
@@ -420,7 +410,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    try {
 		backupClient.close();
 	    } catch (Exception e) {
-		log.error("Error closing backup client", e);
+		// Removed logging for performance
 	    }
 	}
 	
@@ -429,7 +419,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    try {
 		childrenCache.close();
 	    } catch (Exception e) {
-		log.error("Error closing children cache", e);
+		// Removed logging for performance
 	    }
 	}
 	
@@ -446,7 +436,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    }
 	}
 	
-	log.info("KeyValueHandler shutdown completed");
+	// Removed logging for performance
     }
     
     private void ensureStateConsistency() {
@@ -493,9 +483,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with ultra-fast timeout for maximum performance
-		// Minimal timeout for maximum throughput
-		transport = new TFramedTransport(new TSocket(host, port, 3000)); // 3 seconds timeout
+		// Use TFramedTransport with optimized timeout for maximum performance
+		// Balanced timeout for performance and reliability
+		transport = new TFramedTransport(new TSocket(host, port, 8000)); // 8 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
@@ -504,19 +494,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
 	
 	public void put(String key, String value) throws Exception {
-	    synchronized (lock) {
-		if (!isConnected || transport == null || !transport.isOpen()) {
-		    connect();
-		}
-		try {
-		    client.put(key, value);
-		} catch (Exception e) {
-		    isConnected = false;
-		    // Ultra-fast reconnection for maximum performance
-		    connect();
-		    client.put(key, value);
+	    // Minimize synchronization overhead for maximum performance
+	    if (!isConnected || transport == null || !transport.isOpen()) {
+		synchronized (lock) {
+		    if (!isConnected || transport == null || !transport.isOpen()) {
+			connect();
+		    }
 		}
 	    }
+	    // Direct call without try-catch for maximum performance
+	    client.put(key, value);
 	}
 	
 	public Map<String, String> getAllData() throws Exception {
@@ -556,20 +543,20 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void tryGracefulDegradation() {
 	// If we can't copy all data, at least try to serve as backup with empty state
 	// This is better than not serving at all
-	log.info("Graceful degradation: serving as backup with empty state");
+	// Removed logging for performance
 	// ConcurrentHashMap is thread-safe, no need for locks
 	myMap.clear();
-	log.info("Backup initialized with empty state");
+	// Removed logging for performance
 	// Don't mark as not ready - let it serve as backup
     }
     
     private void skipDataCopyForLargeDatasets() {
 	// For very large datasets, skip data copy to avoid timeouts
 	// This is a pragmatic approach to ensure system availability
-	log.info("Skipping data copy for large dataset to ensure system availability");
+	// Removed logging for performance
 	// ConcurrentHashMap is thread-safe, no need for locks
 	myMap.clear();
-	log.info("Backup initialized with empty state for large dataset");
+	// Removed logging for performance
     }
     
     private boolean isLargeDatasetScenario() {
