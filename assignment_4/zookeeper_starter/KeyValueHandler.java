@@ -11,6 +11,7 @@ import org.apache.thrift.transport.TTransportException;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.*;
+import org.apache.zookeeper.CreateMode;
 import org.apache.curator.*;
 import org.apache.curator.retry.*;
 import org.apache.curator.framework.*;
