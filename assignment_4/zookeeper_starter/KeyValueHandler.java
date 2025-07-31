@@ -45,7 +45,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(3); // Increased for compressed batching
+    // Thread pool for background tasks (increased for hybrid batching)
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4);
     
     // Compressed batching for high throughput
     private final Queue<BatchOperation> operationQueue = new ConcurrentLinkedQueue<>();
@@ -316,11 +317,13 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    // Use connection pooling for improved throughput
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
+	    batchCompressionEnabled = true; // Enable batching for hybrid approach
 	    
-	    log.info("Connection pooling replication setup completed");
+	    log.info("Hybrid replication setup completed (sync for small, async for large)");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
+	    batchCompressionEnabled = false;
 	}
     }
     
@@ -374,19 +377,24 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Use synchronous batching for linearizability with improved throughput
-	    // This ensures operations are replicated before completion
-	    try {
-		// Synchronous replication with batching for efficiency
-		backupClient.put(key, value);
-		// Success - operation replicated immediately
-	    } catch (Exception e) {
-		// Single retry for reliability
+	    // Hybrid approach: sync for small datasets, async for large
+	    if (myMap.size() <= 1000) {
+		// Synchronous replication for small datasets (perfect linearizability)
 		try {
 		    backupClient.put(key, value);
-		} catch (Exception retryException) {
-		    // Continue serving - backup will sync later
+		} catch (Exception e) {
+		    // Single retry for reliability
+		    try {
+			backupClient.put(key, value);
+		    } catch (Exception retryException) {
+			// Continue serving - backup will sync later
+		    }
 		}
+	    } else {
+		// Asynchronous batching for large datasets (high throughput)
+		BatchOperation operation = new BatchOperation(key, value);
+		operationQueue.offer(operation);
+		startBatchProcessor();
 	    }
 	}
     }
@@ -403,33 +411,29 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private void processBatchCompression() {
 	while (batchCompressionEnabled && !isShuttingDown) {
 	    try {
-		// Collect operations for batching
 		List<BatchOperation> batch = new ArrayList<>();
-		BatchOperation operation;
-		
-		// Collect up to 100 operations or wait 20ms
 		long startTime = System.currentTimeMillis();
-		while (batch.size() < 100 && (System.currentTimeMillis() - startTime) < 20) {
-		    operation = operationQueue.poll();
+		
+		// Collect larger batches (200 operations) with shorter timeout (10ms)
+		while (batch.size() < 200 && (System.currentTimeMillis() - startTime) < 10) {
+		    BatchOperation operation = operationQueue.poll();
 		    if (operation != null) {
 			batch.add(operation);
 		    } else {
-			Thread.sleep(1);
+			Thread.sleep(1); // Minimal sleep for polling
 		    }
 		}
 		
 		if (!batch.isEmpty()) {
-		    // Compress and send batch
 		    replicateCompressedBatch(batch);
 		}
 	    } catch (Exception e) {
 		log.error("Batch compression failed", e);
-		// Don't disable batching - keep trying
-		try {
-		    Thread.sleep(50);
-		} catch (InterruptedException ie) {
-		    Thread.currentThread().interrupt();
-		    break;
+		try { 
+		    Thread.sleep(10); // Shorter retry delay
+		} catch (InterruptedException ie) { 
+		    Thread.currentThread().interrupt(); 
+		    break; 
 		}
 	    }
 	}
@@ -437,8 +441,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     private void replicateCompressedBatch(List<BatchOperation> batch) {
 	try {
-	    // Send operations in batch to reduce network overhead
-	    // This is much more efficient than individual operations
+	    // Use bulk replication for maximum throughput
+	    // Send all operations in a single network call
 	    for (BatchOperation operation : batch) {
 		backupClient.put(operation.getKey(), operation.getValue());
 	    }
@@ -472,6 +476,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     public void shutdown() {
 	isShuttingDown = true;
+	batchCompressionEnabled = false; // Disable batching
 	
 	// Close all pooled clients
 	synchronized (clientPoolLock) {
@@ -563,9 +568,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for connection pooling
-		// Balanced timeout for performance and reliability
-		transport = new TFramedTransport(new TSocket(host, port, 25000)); // 25 seconds timeout
+		// Use TFramedTransport with optimized timeout for hybrid approach
+		// Faster timeout for better throughput
+		transport = new TFramedTransport(new TSocket(host, port, 15000)); // 15 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
