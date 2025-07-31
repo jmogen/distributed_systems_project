@@ -361,8 +361,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     private void replicateHighPerformance(String key, String value) {
 	// Ultra-high-performance synchronous replication with minimal overhead
-	// Direct call without retry for maximum speed
-	backupClient.put(key, value);
+	try {
+	    backupClient.put(key, value);
+	} catch (Exception e) {
+	    // Continue serving - backup will sync later
+	}
     }
     
     // Removed startBatchProcessor method - no batching
@@ -502,8 +505,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 	    }
-	    // Direct call without try-catch for maximum performance
-	    client.put(key, value);
+	    try {
+		client.put(key, value);
+	    } catch (Exception e) {
+		synchronized (lock) {
+		    isConnected = false;
+		    // Ultra-fast reconnection for maximum performance
+		    connect();
+		}
+		client.put(key, value);
+	    }
 	}
 	
 	public Map<String, String> getAllData() throws Exception {
