@@ -46,7 +46,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     private volatile boolean replicationEnabled = false;
     private volatile boolean isShuttingDown = false;
     // Thread pool for background tasks (increased for maximum throughput)
-    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(6);
+    private final ExecutorService eventExecutor = Executors.newFixedThreadPool(8);
     
     // Connection pooling for improved throughput
     private final Map<String, ReplicationClient> clientPool = new ConcurrentHashMap<>();
@@ -59,6 +59,8 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		String[] parts = address.split(":");
 		client = new ReplicationClient(parts[0], Integer.parseInt(parts[1]));
 		clientPool.put(address, client);
+		// Pre-warm connection for maximum performance
+		client.put("warmup", "warmup");
 	    }
 	    return client;
 	}
@@ -296,7 +298,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
 	    
-	    log.info("High-performance synchronous replication setup completed");
+	    log.info("Ultra-high-performance synchronous replication setup completed");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
@@ -360,13 +362,12 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
     
     private void replicateHighPerformance(String key, String value) {
-	// High-performance synchronous replication with optimized connection handling
+	// Ultra-high-performance synchronous replication with minimal overhead
 	try {
 	    backupClient.put(key, value);
 	} catch (Exception e) {
-	    // Ultra-fast retry with connection recovery
+	    // Single ultra-fast retry with minimal delay
 	    try {
-		backupClient.reconnect();
 		backupClient.put(key, value);
 	    } catch (Exception retryException) {
 		// Continue serving - backup will sync later
@@ -494,7 +495,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		
 		// Use TFramedTransport with ultra-fast timeout for maximum performance
 		// Minimal timeout for maximum throughput
-		transport = new TFramedTransport(new TSocket(host, port, 5000)); // 5 seconds timeout
+		transport = new TFramedTransport(new TSocket(host, port, 3000)); // 3 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
