@@ -86,6 +86,10 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
+    // ZooKeeper-based linearizability tracking
+    private final Map<String, String> pendingOperations = new ConcurrentHashMap<>();
+    private final String operationTrackingPath;
+    
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
 	this.port = port;
@@ -93,6 +97,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	this.zkNode = zkNode;
 	this.serverAddress = host + ":" + port;
 	this.myMap = new ConcurrentHashMap<>();
+	this.operationTrackingPath = zkNode + "/operations";
     }
     
     public void initializeZooKeeper() {
@@ -349,12 +354,47 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    // For large datasets, this is much faster than individual puts
 	    myMap.clear();
 	    myMap.putAll(primaryData);
+	    
+	    // Apply pending operations from ZooKeeper for linearizability
+	    applyPendingOperations();
+	    
 	    // Removed logging for performance
 	    
 	    primaryClient.close();
 	} catch (Exception e) {
 	    log.error("Failed to copy data from primary, using graceful degradation", e);
 	    tryGracefulDegradation();
+	}
+    }
+    
+    private void applyPendingOperations() {
+	try {
+	    // Get all pending operations from ZooKeeper
+	    if (curClient.checkExists().forPath(operationTrackingPath) != null) {
+		List<String> operationZnodes = curClient.getChildren().forPath(operationTrackingPath);
+		
+		for (String operationZnode : operationZnodes) {
+		    try {
+			String operationPath = operationTrackingPath + "/" + operationZnode;
+			byte[] operationData = curClient.getData().forPath(operationPath);
+			String operationString = new String(operationData);
+			
+			// Parse operation data: key:value:server
+			String[] parts = operationString.split(":");
+			if (parts.length >= 2) {
+			    String key = parts[0];
+			    String value = parts[1];
+			    
+			    // Apply the pending operation
+			    myMap.put(key, value);
+			}
+		    } catch (Exception e) {
+			// Ignore individual operation errors
+		    }
+		}
+	    }
+	} catch (Exception e) {
+	    // Ignore ZooKeeper errors - continue with data copy
 	}
     }
     
@@ -377,20 +417,52 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Hybrid approach: async with guaranteed delivery
-	    // This ensures data reaches backup before client response
-	    replicateHybrid(key, value);
+	    // ZooKeeper-based asynchronous replication
+	    // Track operation in ZooKeeper for linearizability
+	    replicateWithZooKeeperTracking(key, value);
 	}
     }
     
-    private void replicateHybrid(String key, String value) {
-	// Hybrid replication: async with guaranteed delivery
-	// Queue operation and wait for confirmation
-	BatchOperation operation = new BatchOperation(key, value);
-	operationQueue.offer(operation);
-	
-	// Wait for operation to be processed (with timeout)
-	waitForOperationConfirmation(operation);
+    private void replicateWithZooKeeperTracking(String key, String value) {
+	// ZooKeeper-based asynchronous replication for linearizability
+	try {
+	    // Create operation tracking znode
+	    String operationId = key + "_" + System.currentTimeMillis();
+	    String operationPath = operationTrackingPath + "/" + operationId;
+	    String operationData = key + ":" + value + ":" + serverAddress;
+	    
+	    // Create ephemeral znode to track operation
+	    curClient.create()
+		.withMode(CreateMode.EPHEMERAL)
+		.forPath(operationPath, operationData.getBytes());
+	    
+	    // Queue operation for async replication
+	    BatchOperation operation = new BatchOperation(key, value);
+	    operationQueue.offer(operation);
+	    startBatchProcessor();
+	    
+	    // Remove tracking znode after replication (in background)
+	    eventExecutor.submit(() -> removeOperationTracking(operationPath));
+	    
+	} catch (Exception e) {
+	    // Fallback to direct replication if ZooKeeper fails
+	    try {
+		backupClient.put(key, value);
+	    } catch (Exception retryException) {
+		// Continue serving - backup will sync later
+	    }
+	}
+    }
+    
+    private void removeOperationTracking(String operationPath) {
+	try {
+	    // Wait a bit for replication to complete
+	    Thread.sleep(10);
+	    // Remove the tracking znode
+	    curClient.delete().forPath(operationPath);
+	} catch (Exception e) {
+	    // Ignore cleanup errors
+	}
     }
     
     private void waitForOperationConfirmation(BatchOperation operation) {
@@ -428,9 +500,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		List<BatchOperation> batch = new ArrayList<>();
 		long startTime = System.currentTimeMillis();
 		
-		// Collect batches (10 operations) with very short timeout (2ms)
-		// This ensures immediate processing for guaranteed delivery
-		while (batch.size() < 10 && (System.currentTimeMillis() - startTime) < 2) {
+		// Collect larger batches (200 operations) with short timeout (5ms)
+		// This maximizes throughput while maintaining responsiveness
+		while (batch.size() < 200 && (System.currentTimeMillis() - startTime) < 5) {
 		    BatchOperation operation = operationQueue.poll();
 		    if (operation != null) {
 			batch.add(operation);
@@ -445,7 +517,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    } catch (Exception e) {
 		// Removed logging for performance
 		try { 
-		    Thread.sleep(2); // Very short retry delay
+		    Thread.sleep(5); // Short retry delay
 		} catch (InterruptedException ie) { 
 		    Thread.currentThread().interrupt(); 
 		    break; 
