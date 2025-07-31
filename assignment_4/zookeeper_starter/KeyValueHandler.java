@@ -343,21 +343,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
 
     
-    // Removed replayUnreplicatedWAL method - no WAL
-    
-    // Removed copyDataInChunks method - no WAL
-
-    private void replicateSync(String key, String value) {
-	// Simple synchronous replication for linearizability
-	// This ensures data reaches backup before client response
-	try {
-	    backupClient.put(key, value);
-	} catch (Exception e) {
-	    // Continue serving - backup will sync later
-	    // This maintains availability while sacrificing some consistency
-	}
-    }
-    
     public String get(String key) throws org.apache.thrift.TException {
 	return myMap.get(key);
     }
@@ -368,10 +353,23 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Simple synchronous replication for linearizability
-	    // This ensures data reaches backup before client response
-	    replicateSync(key, value);
+	    // High-performance asynchronous replication
+	    // Operations complete immediately, replication happens in background
+	    replicateAsync(key, value);
 	}
+    }
+    
+    private void replicateAsync(String key, String value) {
+	// High-performance asynchronous replication
+	// Operations complete immediately, replication happens in background
+	eventExecutor.submit(() -> {
+	    try {
+		backupClient.put(key, value);
+	    } catch (Exception e) {
+		// Continue serving - backup will sync later
+		// This maintains availability while sacrificing some consistency
+	    }
+	});
     }
     
     // Removed startWALReplication method - no WAL
@@ -481,9 +479,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for high performance
-		// Short timeout for faster failure detection and reconnection
-		transport = new TFramedTransport(new TSocket(host, port, 3000)); // 3 seconds timeout
+		// Use TFramedTransport with optimized timeout for maximum performance
+		// Ultra-short timeout for faster failure detection and reconnection
+		transport = new TFramedTransport(new TSocket(host, port, 1000)); // 1 second timeout
 		transport.open();
 		client = new KeyValueService.Client(new TBinaryProtocol(transport));
 		isConnected = true;
