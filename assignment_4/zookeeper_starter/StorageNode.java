@@ -65,11 +65,16 @@ public class StorageNode {
 	TServer server = new TThreadPoolServer(sargs);
 	log.info("Launching server on " + host + ":" + port);
 
-	new Thread(new Runnable() {
+	// Start server in background thread
+	Thread serverThread = new Thread(new Runnable() {
 		public void run() {
 		    server.serve();
 		}
-	    }).start();
+	    });
+	serverThread.start();
+
+	// Wait a moment for server to start
+	Thread.sleep(1000);
 
 	// Initialize ZooKeeper integration
 	handler.initializeZooKeeper();
