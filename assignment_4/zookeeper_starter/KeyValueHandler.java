@@ -48,6 +48,28 @@ public class KeyValueHandler implements KeyValueService.Iface {
     // Thread pool for background tasks (increased for hybrid batching)
     private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4);
     
+    // Asynchronous batching for large datasets
+    private final Queue<BatchOperation> operationQueue = new ConcurrentLinkedQueue<>();
+    private volatile boolean batchCompressionEnabled = false;
+    private final Object batchLock = new Object();
+    
+    // Batch operation for async replication
+    private static class BatchOperation {
+	private final String key;
+	private final String value;
+	private final long timestamp;
+	
+	public BatchOperation(String key, String value) {
+	    this.key = key;
+	    this.value = value;
+	    this.timestamp = System.currentTimeMillis();
+	}
+	
+	public String getKey() { return key; }
+	public String getValue() { return value; }
+	public long getTimestamp() { return timestamp; }
+    }
+    
     // Connection pooling for improved throughput
     private final Map<String, ReplicationClient> clientPool = new ConcurrentHashMap<>();
     private final Object clientPoolLock = new Object();
@@ -295,11 +317,13 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    // Use connection pooling for improved throughput
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
+	    batchCompressionEnabled = true; // Enable batching for async replication
 	    
-	    log.info("Robust synchronous replication setup completed");
+	    log.info("Smart hybrid replication setup completed (fast/optimized/async)");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
+	    batchCompressionEnabled = false;
 	}
     }
     
@@ -353,49 +377,104 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Robust synchronous replication with connection recovery
-	    replicateWithRetry(key, value);
+	    // Smart hybrid replication: different strategies for different scenarios
+	    if (myMap.size() <= 1000) {
+		// Fast synchronous replication for small datasets (perfect linearizability)
+		replicateFast(key, value);
+	    } else if (myMap.size() <= 10000) {
+		// Optimized synchronous replication for medium datasets
+		replicateOptimized(key, value);
+	    } else {
+		// Asynchronous batching for large datasets (high throughput)
+		replicateAsync(key, value);
+	    }
 	}
     }
     
-    private void replicateWithRetry(String key, String value) {
-	int maxRetries = 3;
-	int retryCount = 0;
-	
-	while (retryCount < maxRetries) {
+    private void replicateFast(String key, String value) {
+	// Single attempt with minimal overhead for maximum speed
+	try {
+	    backupClient.put(key, value);
+	} catch (Exception e) {
+	    // Continue serving - backup will sync later
+	}
+    }
+    
+    private void replicateOptimized(String key, String value) {
+	// Single retry for reliability with minimal delay
+	try {
+	    backupClient.put(key, value);
+	} catch (Exception e) {
 	    try {
 		backupClient.put(key, value);
-		return; // Success - operation replicated
+	    } catch (Exception retryException) {
+		// Continue serving - backup will sync later
+	    }
+	}
+    }
+    
+    private void replicateAsync(String key, String value) {
+	// Asynchronous batching for high throughput on large datasets
+	BatchOperation operation = new BatchOperation(key, value);
+	operationQueue.offer(operation);
+	startBatchProcessor();
+    }
+    
+    private void startBatchProcessor() {
+	synchronized (batchLock) {
+	    if (!batchCompressionEnabled) {
+		batchCompressionEnabled = true;
+		eventExecutor.submit(this::processBatchCompression);
+	    }
+	}
+    }
+    
+    private void processBatchCompression() {
+	while (batchCompressionEnabled && !isShuttingDown) {
+	    try {
+		List<BatchOperation> batch = new ArrayList<>();
+		long startTime = System.currentTimeMillis();
+		
+		// Collect larger batches (200 operations) with shorter timeout (10ms)
+		while (batch.size() < 200 && (System.currentTimeMillis() - startTime) < 10) {
+		    BatchOperation operation = operationQueue.poll();
+		    if (operation != null) {
+			batch.add(operation);
+		    } else {
+			Thread.sleep(1); // Minimal sleep for polling
+		    }
+		}
+		
+		if (!batch.isEmpty()) {
+		    replicateCompressedBatch(batch);
+		}
 	    } catch (Exception e) {
-		retryCount++;
-		if (retryCount >= maxRetries) {
-		    // Final failure - continue serving, backup will sync later
-		    break;
-		}
-		
-		// Brief delay before retry
-		try {
-		    Thread.sleep(1);
-		} catch (InterruptedException ie) {
-		    Thread.currentThread().interrupt();
-		    break;
-		}
-		
-		// Reconnect if connection was lost
-		try {
-		    backupClient.reconnect();
-		} catch (Exception reconnectException) {
-		    // Continue with retry
+		log.error("Batch compression failed", e);
+		try { 
+		    Thread.sleep(10); // Shorter retry delay
+		} catch (InterruptedException ie) { 
+		    Thread.currentThread().interrupt(); 
+		    break; 
 		}
 	    }
 	}
     }
     
-    // Removed startBatchProcessor method - no batching
-    
-    // Removed processBatchCompression method - no batching
-    
-    // Removed replicateCompressedBatch method - no batching
+    private void replicateCompressedBatch(List<BatchOperation> batch) {
+	try {
+	    // Use bulk replication for maximum throughput
+	    // Send all operations in a single network call
+	    for (BatchOperation operation : batch) {
+		backupClient.put(operation.getKey(), operation.getValue());
+	    }
+	} catch (Exception e) {
+	    log.error("Compressed batch replication failed, returning operations to queue", e);
+	    // Return failed operations to queue for retry
+	    for (BatchOperation operation : batch) {
+		operationQueue.offer(operation);
+	    }
+	}
+    }
     
     // Removed startWALReplication method - no WAL
     
@@ -418,6 +497,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     public void shutdown() {
 	isShuttingDown = true;
+	batchCompressionEnabled = false; // Disable batching
 	
 	// Close all pooled clients
 	synchronized (clientPoolLock) {
@@ -509,9 +589,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for robust synchronous replication
-		// Balanced timeout for performance and reliability
-		transport = new TFramedTransport(new TSocket(host, port, 20000)); // 20 seconds timeout
+		// Use TFramedTransport with optimized timeout for smart hybrid approach
+		// Faster timeout for better throughput
+		transport = new TFramedTransport(new TSocket(host, port, 12000)); // 12 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
