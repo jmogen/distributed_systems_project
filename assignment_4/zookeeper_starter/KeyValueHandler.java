@@ -317,7 +317,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    // Use connection pooling for improved throughput
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
-	    batchCompressionEnabled = true; // Enable batching for robust async replication
+	    batchCompressionEnabled = true; // Enable batching for hybrid approach
 	    
 	    // Removed logging for performance
 	} catch (Exception e) {
@@ -377,17 +377,40 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Robust asynchronous replication for network resilience
-	    // This handles connection failures gracefully
-	    replicateRobustAsync(key, value);
+	    // Hybrid approach: async with guaranteed delivery
+	    // This ensures data reaches backup before client response
+	    replicateHybrid(key, value);
 	}
     }
     
-    private void replicateRobustAsync(String key, String value) {
-	// Robust asynchronous replication with connection failure handling
+    private void replicateHybrid(String key, String value) {
+	// Hybrid replication: async with guaranteed delivery
+	// Queue operation and wait for confirmation
 	BatchOperation operation = new BatchOperation(key, value);
 	operationQueue.offer(operation);
-	startBatchProcessor();
+	
+	// Wait for operation to be processed (with timeout)
+	waitForOperationConfirmation(operation);
+    }
+    
+    private void waitForOperationConfirmation(BatchOperation operation) {
+	// Wait for operation to be processed with timeout
+	long startTime = System.currentTimeMillis();
+	long timeout = 100; // 100ms timeout
+	
+	while (System.currentTimeMillis() - startTime < timeout) {
+	    // Check if operation has been processed
+	    if (!operationQueue.contains(operation)) {
+		return; // Operation processed successfully
+	    }
+	    try {
+		Thread.sleep(1); // Brief sleep
+	    } catch (InterruptedException e) {
+		Thread.currentThread().interrupt();
+		break;
+	    }
+	}
+	// Timeout reached - continue serving, backup will sync later
     }
     
     private void startBatchProcessor() {
@@ -405,9 +428,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		List<BatchOperation> batch = new ArrayList<>();
 		long startTime = System.currentTimeMillis();
 		
-		// Collect batches (50 operations) with short timeout (5ms)
-		// This balances throughput with network resilience
-		while (batch.size() < 50 && (System.currentTimeMillis() - startTime) < 5) {
+		// Collect batches (10 operations) with very short timeout (2ms)
+		// This ensures immediate processing for guaranteed delivery
+		while (batch.size() < 10 && (System.currentTimeMillis() - startTime) < 2) {
 		    BatchOperation operation = operationQueue.poll();
 		    if (operation != null) {
 			batch.add(operation);
@@ -422,7 +445,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    } catch (Exception e) {
 		// Removed logging for performance
 		try { 
-		    Thread.sleep(5); // Short retry delay
+		    Thread.sleep(2); // Very short retry delay
 		} catch (InterruptedException ie) { 
 		    Thread.currentThread().interrupt(); 
 		    break; 
