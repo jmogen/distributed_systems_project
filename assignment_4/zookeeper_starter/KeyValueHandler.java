@@ -79,42 +79,29 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
     
     public void initializeZooKeeper() {
-	try {
-	    // Add timeout protection for initialization
-	    long startTime = System.currentTimeMillis();
-	    long maxInitTime = 60000; // 60 seconds max for initialization
-	    
-	    // Ensure parent znode exists
-	    if (curClient.checkExists().forPath(zkNode) == null) {
-		curClient.create().creatingParentsIfNeeded().forPath(zkNode);
+	// Non-blocking ZooKeeper initialization
+	eventExecutor.submit(() -> {
+	    try {
+		// Ensure parent znode exists
+		if (curClient.checkExists().forPath(zkNode) == null) {
+		    curClient.create().creatingParentsIfNeeded().forPath(zkNode);
+		}
+		
+		// Create ephemeral sequential znode
+		myZnodePath = curClient.create()
+		    .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
+		    .forPath(zkNode + "/node", serverAddress.getBytes());
+		
+		log.info("Created znode: " + myZnodePath);
+		
+		determinePrimaryStatus();
+		setupWatches();
+		
+		log.info("ZooKeeper initialization completed successfully");
+	    } catch (Exception e) {
+		log.error("Failed to initialize ZooKeeper", e);
 	    }
-	    
-	    // Check timeout before proceeding
-	    if (System.currentTimeMillis() - startTime > maxInitTime) {
-		log.error("ZooKeeper initialization timeout - aborting");
-		return;
-	    }
-	    
-	    // Create ephemeral sequential znode
-	    myZnodePath = curClient.create()
-		.withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
-		.forPath(zkNode + "/node", serverAddress.getBytes());
-	    
-	    // Check timeout before proceeding
-	    if (System.currentTimeMillis() - startTime > maxInitTime) {
-		log.error("ZooKeeper initialization timeout - aborting");
-		return;
-	    }
-	    
-	    log.info("Created znode: " + myZnodePath);
-	    
-	    determinePrimaryStatus();
-	    setupWatches();
-	    
-	    log.info("ZooKeeper initialization completed successfully");
-	} catch (Exception e) {
-	    log.error("Failed to initialize ZooKeeper", e);
-	}
+	});
     }
     
     private void determinePrimaryStatus() {
@@ -292,54 +279,44 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
     
     private void setupBackupReplication() {
-	try {
-	    String[] parts = currentBackupAddress.split(":");
-	    String backupHost = parts[0];
-	    int backupPort = Integer.parseInt(parts[1]);
-	    
-	    // Use connection pooling for improved throughput
-	    backupClient = getOrCreateClient(currentBackupAddress);
-	    replicationEnabled = true;
-	    
-	    // Removed logging for performance
-	} catch (Exception e) {
-	    log.error("Failed to setup backup replication", e);
-	    replicationEnabled = false;
-	}
+	// Non-blocking backup replication setup
+	eventExecutor.submit(() -> {
+	    try {
+		backupClient = getOrCreateClient(currentBackupAddress);
+		replicationEnabled = true;
+		
+	    } catch (Exception e) {
+		log.error("Failed to setup backup replication", e);
+		replicationEnabled = false;
+	    }
+	});
     }
     
     private void copyDataFromPrimary() {
 	if (currentPrimaryAddress == null) return;
 	
-	// Removed logging for performance
-	
-	try {
-	    String[] parts = currentPrimaryAddress.split(":");
-	    String primaryHost = parts[0];
-	    int primaryPort = Integer.parseInt(parts[1]);
-	    
-	    // Removed logging for performance
-	    ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
-	    
-	    // Removed logging for performance
-	    Map<String, String> primaryData = primaryClient.getAllData();
-	    
-	    // Removed logging for performance
-	    
-	    // Copy data efficiently using putAll for maximum performance
-	    // For large datasets, this is much faster than individual puts
-	    myMap.clear();
-	    myMap.putAll(primaryData);
-	    
-
-	    
-	    // Removed logging for performance
-	    
-	    primaryClient.close();
-	} catch (Exception e) {
-	    log.error("Failed to copy data from primary, using graceful degradation", e);
-	    tryGracefulDegradation();
-	}
+	// Non-blocking data copy to prevent deadlocks
+	eventExecutor.submit(() -> {
+	    try {
+		String[] parts = currentPrimaryAddress.split(":");
+		String primaryHost = parts[0];
+		int primaryPort = Integer.parseInt(parts[1]);
+		
+		ReplicationClient primaryClient = new ReplicationClient(primaryHost, primaryPort);
+		
+		Map<String, String> primaryData = primaryClient.getAllData();
+		
+		// Copy data efficiently using putAll for maximum performance
+		myMap.clear();
+		myMap.putAll(primaryData);
+		
+		primaryClient.close();
+		
+	    } catch (Exception e) {
+		log.error("Failed to copy data from primary, using graceful degradation", e);
+		tryGracefulDegradation();
+	    }
+	});
     }
     
 

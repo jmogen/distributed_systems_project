@@ -61,7 +61,8 @@ public class StorageNode {
 	sargs.protocolFactory(new TBinaryProtocol.Factory());
 	sargs.transportFactory(new TFramedTransport.Factory());
 	sargs.processorFactory(new TProcessorFactory(processor));
-	sargs.maxWorkerThreads(64);
+	sargs.maxWorkerThreads(128); // Increased for better throughput
+	sargs.minWorkerThreads(16);  // Minimum threads for responsiveness
 	TServer server = new TThreadPoolServer(sargs);
 	log.info("Launching server on " + host + ":" + port);
 
