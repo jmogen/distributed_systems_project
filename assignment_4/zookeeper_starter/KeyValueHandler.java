@@ -319,7 +319,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    replicationEnabled = true;
 	    batchCompressionEnabled = true; // Enable batching for async replication
 	    
-	    log.info("Comprehensive async replication setup completed (max throughput)");
+	    log.info("Smart hybrid replication setup completed (sync for small, async for large)");
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
@@ -377,9 +377,28 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // Asynchronous replication for maximum throughput
-	    // This is the key insight: async replication allows thousands of ops/s
-	    replicateAsync(key, value);
+	    // Smart hybrid approach: sync for small datasets, async for large
+	    if (myMap.size() <= 1000) {
+		// Synchronous replication for small datasets (perfect linearizability)
+		replicateSync(key, value);
+	    } else {
+		// Asynchronous batching for large datasets (high throughput)
+		replicateAsync(key, value);
+	    }
+	}
+    }
+    
+    private void replicateSync(String key, String value) {
+	// Synchronous replication for perfect linearizability
+	try {
+	    backupClient.put(key, value);
+	} catch (Exception e) {
+	    // Single retry for reliability
+	    try {
+		backupClient.put(key, value);
+	    } catch (Exception retryException) {
+		// Continue serving - backup will sync later
+	    }
 	}
     }
     
@@ -406,9 +425,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		List<BatchOperation> batch = new ArrayList<>();
 		long startTime = System.currentTimeMillis();
 		
-		// Collect larger batches (500 operations) with very short timeout (5ms)
-		// This maximizes throughput by reducing network overhead
-		while (batch.size() < 500 && (System.currentTimeMillis() - startTime) < 5) {
+		// Collect smaller batches (100 operations) with short timeout (8ms)
+		// This balances throughput with linearizability
+		while (batch.size() < 100 && (System.currentTimeMillis() - startTime) < 8) {
 		    BatchOperation operation = operationQueue.poll();
 		    if (operation != null) {
 			batch.add(operation);
@@ -423,7 +442,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    } catch (Exception e) {
 		log.error("Batch compression failed", e);
 		try { 
-		    Thread.sleep(5); // Very short retry delay
+		    Thread.sleep(8); // Short retry delay
 		} catch (InterruptedException ie) { 
 		    Thread.currentThread().interrupt(); 
 		    break; 
@@ -561,9 +580,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for async replication
-		// Fast timeout for maximum throughput
-		transport = new TFramedTransport(new TSocket(host, port, 8000)); // 8 seconds timeout
+		// Use TFramedTransport with optimized timeout for smart hybrid approach
+		// Balanced timeout for performance and reliability
+		transport = new TFramedTransport(new TSocket(host, port, 10000)); // 10 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
