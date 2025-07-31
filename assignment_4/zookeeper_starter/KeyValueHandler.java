@@ -360,11 +360,16 @@ public class KeyValueHandler implements KeyValueService.Iface {
     }
     
     private void replicateHighPerformance(String key, String value) {
-	// Ultra-high-performance synchronous replication with minimal overhead
+	// Balanced synchronous replication with minimal overhead
 	try {
 	    backupClient.put(key, value);
 	} catch (Exception e) {
-	    // Continue serving - backup will sync later
+	    // Single retry for reliability with minimal overhead
+	    try {
+		backupClient.put(key, value);
+	    } catch (Exception retryException) {
+		// Continue serving - backup will sync later
+	    }
 	}
     }
     
@@ -486,9 +491,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for maximum performance
+		// Use TFramedTransport with optimized timeout for balanced performance
 		// Balanced timeout for performance and reliability
-		transport = new TFramedTransport(new TSocket(host, port, 8000)); // 8 seconds timeout
+		transport = new TFramedTransport(new TSocket(host, port, 6000)); // 6 seconds timeout
 		transport.open();
 		TProtocol protocol = new TBinaryProtocol(transport);
 		client = new KeyValueService.Client(protocol);
@@ -497,7 +502,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
 	
 	public void put(String key, String value) throws Exception {
-	    // Minimize synchronization overhead for maximum performance
+	    // Optimized connection handling with minimal overhead
 	    if (!isConnected || transport == null || !transport.isOpen()) {
 		synchronized (lock) {
 		    if (!isConnected || transport == null || !transport.isOpen()) {
@@ -508,9 +513,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    try {
 		client.put(key, value);
 	    } catch (Exception e) {
+		// Fast reconnection for reliability
 		synchronized (lock) {
 		    isConnected = false;
-		    // Ultra-fast reconnection for maximum performance
 		    connect();
 		}
 		client.put(key, value);
