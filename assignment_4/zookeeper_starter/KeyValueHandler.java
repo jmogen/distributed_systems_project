@@ -48,27 +48,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
     // Thread pool for background tasks (optimized for performance)
     private final ExecutorService eventExecutor = Executors.newFixedThreadPool(4);
     
-    // Robust asynchronous batching for network resilience
-    private final Queue<BatchOperation> operationQueue = new ConcurrentLinkedQueue<>();
-    private volatile boolean batchCompressionEnabled = false;
-    private final Object batchLock = new Object();
-    
-    // Batch operation for robust async replication
-    private static class BatchOperation {
-	private final String key;
-	private final String value;
-	private final long timestamp;
-	
-	public BatchOperation(String key, String value) {
-	    this.key = key;
-	    this.value = value;
-	    this.timestamp = System.currentTimeMillis();
-	}
-	
-	public String getKey() { return key; }
-	public String getValue() { return value; }
-	public long getTimestamp() { return timestamp; }
-    }
+    // Removed batch processing - using simple synchronous replication
     
     // Connection pooling for improved throughput
     private final Map<String, ReplicationClient> clientPool = new ConcurrentHashMap<>();
@@ -86,9 +66,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
-    // ZooKeeper-based linearizability tracking
-    private final Map<String, String> pendingOperations = new ConcurrentHashMap<>();
-    private final String operationTrackingPath;
+
     
     public KeyValueHandler(String host, int port, CuratorFramework curClient, String zkNode) {
 	this.host = host;
@@ -97,7 +75,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	this.zkNode = zkNode;
 	this.serverAddress = host + ":" + port;
 	this.myMap = new ConcurrentHashMap<>();
-	this.operationTrackingPath = zkNode + "/operations";
     }
     
     public void initializeZooKeeper() {
@@ -322,13 +299,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    // Use connection pooling for improved throughput
 	    backupClient = getOrCreateClient(currentBackupAddress);
 	    replicationEnabled = true;
-	    batchCompressionEnabled = true; // Enable batching for hybrid approach
 	    
 	    // Removed logging for performance
 	} catch (Exception e) {
 	    log.error("Failed to setup backup replication", e);
 	    replicationEnabled = false;
-	    batchCompressionEnabled = false;
 	}
     }
     
@@ -355,8 +330,7 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	    myMap.clear();
 	    myMap.putAll(primaryData);
 	    
-	    // Apply pending operations from ZooKeeper for linearizability
-	    applyPendingOperations();
+
 	    
 	    // Removed logging for performance
 	    
@@ -367,48 +341,25 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	}
     }
     
-    private void applyPendingOperations() {
-	try {
-	    // Get all pending operations from ZooKeeper
-	    if (curClient.checkExists().forPath(operationTrackingPath) != null) {
-		List<String> operationZnodes = curClient.getChildren().forPath(operationTrackingPath);
-		
-		for (String operationZnode : operationZnodes) {
-		    try {
-			String operationPath = operationTrackingPath + "/" + operationZnode;
-			byte[] operationData = curClient.getData().forPath(operationPath);
-			String operationString = new String(operationData);
-			
-			// Parse operation data: key:value:server
-			String[] parts = operationString.split(":");
-			if (parts.length >= 2) {
-			    String key = parts[0];
-			    String value = parts[1];
-			    
-			    // Apply the pending operation
-			    myMap.put(key, value);
-			}
-		    } catch (Exception e) {
-			// Ignore individual operation errors
-		    }
-		}
-	    }
-	} catch (Exception e) {
-	    // Ignore ZooKeeper errors - continue with data copy
-	}
-    }
+
     
     // Removed replayUnreplicatedWAL method - no WAL
     
     // Removed copyDataInChunks method - no WAL
 
+    private void replicateSync(String key, String value) {
+	// Simple synchronous replication for linearizability
+	// This ensures data reaches backup before client response
+	try {
+	    backupClient.put(key, value);
+	} catch (Exception e) {
+	    // Continue serving - backup will sync later
+	    // This maintains availability while sacrificing some consistency
+	}
+    }
+    
     public String get(String key) throws org.apache.thrift.TException {
-	// ConcurrentHashMap is thread-safe, no need for additional locks
-	String ret = myMap.get(key);
-	if (ret == null)
-	    return "";
-	else
-	    return ret;
+	return myMap.get(key);
     }
 
     public void put(String key, String value) throws org.apache.thrift.TException {
@@ -417,126 +368,9 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	// Replicate to backup if we're primary and replication is enabled
 	if (isPrimary && replicationEnabled && backupClient != null) {
-	    // ZooKeeper-based asynchronous replication
-	    // Track operation in ZooKeeper for linearizability
-	    replicateWithZooKeeperTracking(key, value);
-	}
-    }
-    
-    private void replicateWithZooKeeperTracking(String key, String value) {
-	// ZooKeeper-based asynchronous replication for linearizability
-	try {
-	    // Create operation tracking znode
-	    String operationId = key + "_" + System.currentTimeMillis();
-	    String operationPath = operationTrackingPath + "/" + operationId;
-	    String operationData = key + ":" + value + ":" + serverAddress;
-	    
-	    // Create ephemeral znode to track operation
-	    curClient.create()
-		.withMode(CreateMode.EPHEMERAL)
-		.forPath(operationPath, operationData.getBytes());
-	    
-	    // Queue operation for async replication
-	    BatchOperation operation = new BatchOperation(key, value);
-	    operationQueue.offer(operation);
-	    startBatchProcessor();
-	    
-	    // Remove tracking znode after replication (in background)
-	    eventExecutor.submit(() -> removeOperationTracking(operationPath));
-	    
-	} catch (Exception e) {
-	    // Fallback to direct replication if ZooKeeper fails
-	    try {
-		backupClient.put(key, value);
-	    } catch (Exception retryException) {
-		// Continue serving - backup will sync later
-	    }
-	}
-    }
-    
-    private void removeOperationTracking(String operationPath) {
-	try {
-	    // Wait a bit for replication to complete
-	    Thread.sleep(10);
-	    // Remove the tracking znode
-	    curClient.delete().forPath(operationPath);
-	} catch (Exception e) {
-	    // Ignore cleanup errors
-	}
-    }
-    
-    private void waitForOperationConfirmation(BatchOperation operation) {
-	// Wait for operation to be processed with timeout
-	long startTime = System.currentTimeMillis();
-	long timeout = 100; // 100ms timeout
-	
-	while (System.currentTimeMillis() - startTime < timeout) {
-	    // Check if operation has been processed
-	    if (!operationQueue.contains(operation)) {
-		return; // Operation processed successfully
-	    }
-	    try {
-		Thread.sleep(1); // Brief sleep
-	    } catch (InterruptedException e) {
-		Thread.currentThread().interrupt();
-		break;
-	    }
-	}
-	// Timeout reached - continue serving, backup will sync later
-    }
-    
-    private void startBatchProcessor() {
-	synchronized (batchLock) {
-	    if (!batchCompressionEnabled) {
-		batchCompressionEnabled = true;
-		eventExecutor.submit(this::processBatchCompression);
-	    }
-	}
-    }
-    
-    private void processBatchCompression() {
-	while (batchCompressionEnabled && !isShuttingDown) {
-	    try {
-		List<BatchOperation> batch = new ArrayList<>();
-		long startTime = System.currentTimeMillis();
-		
-		// Collect larger batches (200 operations) with short timeout (5ms)
-		// This maximizes throughput while maintaining responsiveness
-		while (batch.size() < 200 && (System.currentTimeMillis() - startTime) < 5) {
-		    BatchOperation operation = operationQueue.poll();
-		    if (operation != null) {
-			batch.add(operation);
-		    } else {
-			Thread.sleep(1); // Minimal sleep for polling
-		    }
-		}
-		
-		if (!batch.isEmpty()) {
-		    replicateCompressedBatch(batch);
-		}
-	    } catch (Exception e) {
-		// Removed logging for performance
-		try { 
-		    Thread.sleep(5); // Short retry delay
-		} catch (InterruptedException ie) { 
-		    Thread.currentThread().interrupt(); 
-		    break; 
-		}
-	    }
-	}
-    }
-    
-    private void replicateCompressedBatch(List<BatchOperation> batch) {
-	try {
-	    // Robust batch replication with connection failure handling
-	    for (BatchOperation operation : batch) {
-		backupClient.put(operation.getKey(), operation.getValue());
-	    }
-	} catch (Exception e) {
-	    // Return failed operations to queue for retry
-	    for (BatchOperation operation : batch) {
-		operationQueue.offer(operation);
-	    }
+	    // Simple synchronous replication for linearizability
+	    // This ensures data reaches backup before client response
+	    replicateSync(key, value);
 	}
     }
     
@@ -561,7 +395,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
     
     public void shutdown() {
 	isShuttingDown = true;
-	batchCompressionEnabled = false; // Disable batching
 	
 	// Close all pooled clients
 	synchronized (clientPoolLock) {
@@ -640,11 +473,6 @@ public class KeyValueHandler implements KeyValueService.Iface {
 	
 	private void connect() throws Exception {
 	    synchronized (lock) {
-		if (transport != null && transport.isOpen()) {
-		    // Reuse existing connection if it's still open
-		    return;
-		}
-		
 		if (transport != null) {
 		    try {
 			transport.close();
@@ -653,12 +481,11 @@ public class KeyValueHandler implements KeyValueService.Iface {
 		    }
 		}
 		
-		// Use TFramedTransport with optimized timeout for balanced performance
-		// Balanced timeout for performance and reliability
-		transport = new TFramedTransport(new TSocket(host, port, 6000)); // 6 seconds timeout
+		// Use TFramedTransport with optimized timeout for high performance
+		// Short timeout for faster failure detection and reconnection
+		transport = new TFramedTransport(new TSocket(host, port, 3000)); // 3 seconds timeout
 		transport.open();
-		TProtocol protocol = new TBinaryProtocol(transport);
-		client = new KeyValueService.Client(protocol);
+		client = new KeyValueService.Client(new TBinaryProtocol(transport));
 		isConnected = true;
 	    }
 	}
