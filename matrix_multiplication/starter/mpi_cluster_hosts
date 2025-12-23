@@ -1,0 +1,7 @@
+# MPI cluster hostnames for distributed matrix multiplication
+# Replace with your actual MPI-enabled cluster nodes
+
+node1.local
+node2.local
+node3.local
+node4.local

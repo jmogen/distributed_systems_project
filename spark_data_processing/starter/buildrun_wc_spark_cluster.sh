@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Build and run Spark WordCount on cluster
+# Distributed Word Count with Apache Spark
+
+hostname | grep ecehadoop
+if [ $? -eq 1 ]; then
+    echo "This script must be run on ecehadoop :("
+    exit -1
+fi
+
+export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/
+export SCALA_HOME=/usr
+export HADOOP_HOME=/opt/hadoop-latest/hadoop
+export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop/
+export SPARK_HOME=/opt/spark-latest/
+#export SPARK_HOME=/opt/spark-2.4.6-bin-without-hadoop-scala-2.12/
+#export SPARK_HOME=/opt/spark-3.4.0-bin-hadoop3
+#export SPARK_DIST_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
+#MAIN_SPARK_JAR=`ls $SPARK_HOME/jars/spark-core*.jar`
+#MAIN_SPARK_JAR="$SPARK_HOME/jars/*"
+MAIN_SPARK_JAR="`ls $SPARK_HOME/jars/spark-core*.jar`:`ls $SPARK_HOME/jars/spark-common*.jar`"
+export CLASSPATH=".:$MAIN_SPARK_JAR"
+
+
+echo --- Deleting
+rm SparkWC.jar
+rm SparkWC*.class
+
+echo --- Compiling
+$SCALA_HOME/bin/scalac -J-Xmx1g SparkWC.scala
+if [ $? -ne 0 ]; then
+    exit
+fi
+
+echo --- Jarring
+$JAVA_HOME/bin/jar -cf SparkWC.jar SparkWC*.class
+
+echo --- Running
+INPUT=/user/${USER}/a2_inputs/
+OUTPUT=/user/${USER}/a2_starter_code_output_spark/
+
+$HADOOP_HOME/bin/hdfs dfs -rm -R $INPUT
+$HADOOP_HOME/bin/hdfs dfs -mkdir $INPUT
+$HADOOP_HOME/bin/hdfs dfs -rm -R $OUTPUT
+#$HADOOP_HOME/bin/hdfs dfs -mkdir $OUTPUT
+$HADOOP_HOME/bin/hdfs dfs -copyFromLocal sample_input/smalldata.txt $INPUT
+time $SPARK_HOME/bin/spark-submit --master yarn --class SparkWC --driver-memory 4g --executor-memory 4g SparkWC.jar $INPUT $OUTPUT
+
+export HADOOP_ROOT_LOGGER="WARN"
+$HADOOP_HOME/bin/hdfs dfs -ls $OUTPUT
+$HADOOP_HOME/bin/hdfs dfs -cat $OUTPUT/*

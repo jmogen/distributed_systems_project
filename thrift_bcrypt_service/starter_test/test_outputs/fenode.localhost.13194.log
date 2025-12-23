@@ -1,0 +1,39 @@
+0 [main] INFO FENode  - Launching FE node on port 13194
+2180 [pool-3-thread-1] INFO FENode  - BE node registered: ecetesla2:13195 (total: 1)
+2280 [pool-3-thread-3] INFO FENode  - BE node registered: ecetesla2:13196 (total: 2)
+3733 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+3736 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+4527 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+4527 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+5226 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+5226 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+5923 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+5924 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+6513 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+6513 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+7142 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+7142 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+7748 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+7748 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+8356 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+8356 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+9039 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+9039 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+9611 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+9611 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+10193 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+10193 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+10837 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+10837 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+11465 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+11465 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+11908 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+11911 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+12350 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+12350 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+12790 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+12790 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+13226 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196
+13226 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+13657 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13195
+13657 [pool-3-thread-5] INFO FENode  - Dispatching sub-batch of size 8 to BE ecetesla2:13196

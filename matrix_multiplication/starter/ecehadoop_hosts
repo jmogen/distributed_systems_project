@@ -1,0 +1,7 @@
+# Cluster node hostnames for distributed matrix multiplication
+# Replace with your actual cluster node addresses
+
+node1.local
+node2.local
+node3.local
+node4.local
