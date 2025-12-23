@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Package script for bcrypt service
+# Creates tarball with all necessary files for distribution
+
+FNAME=a3.tar.gz
+
+tar -czf $FNAME *.java a1.thrift
+
+echo
+echo Your tarball file name is: $FNAME
+echo
+echo It contains the following files:
+echo
+tar -tf $FNAME
+
+echo
+echo Good luck!
+echo
